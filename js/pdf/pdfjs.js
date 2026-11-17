@@ -59,7 +59,10 @@ function makeCropper(pdf) {
       const c = document.createElement('canvas');
       c.width = w;
       c.height = h;
-      c.getContext('2d').drawImage(canvas, x, y, w, h, 0, 0, w, h);
+      const cx = c.getContext('2d');
+      cx.drawImage(canvas, x, y, w, h, 0, 0, w, h);
+      cx.fillStyle = '#fff';
+      for (const m of r.masks || []) cx.fillRect(m.x0 * scale - x, m.y0 * scale - y, (m.x1 - m.x0) * scale, (m.y1 - m.y0) * scale);
       out.push(await canvasToBlob(c));
     }
     canvas.width = canvas.height = 0; // free memory early

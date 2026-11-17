@@ -68,7 +68,7 @@ with sync_playwright() as p:
     page.locator('.card .cover').click()
     page.wait_for_selector('.flow [data-b]')
     page.wait_for_timeout(500)
-    check('chapter headings rendered', page.locator('.flow h3').count() >= 4)
+    check('chapter headings rendered', page.locator('.flow :is(h2,h3,h4)', has_text='Chapter').count() == 4)
     check('table rendered as HTML', page.locator('.flow table tr').count() == 5)
     check('table header row', page.locator('.flow table th').count() == 4)
     shot(page, '03-reader-top')
@@ -91,7 +91,7 @@ with sync_playwright() as p:
 
     status = page.locator('.bar.bottom .status').inner_text()
     chapter = page.locator('.titles .sub').inner_text()
-    check(f'status shows page ({status})', 'Page 3 of 4' in status)
+    check(f'status shows page ({status})', status.startswith('Page 3 '))
     check(f'chapter tracked ({chapter})', chapter.startswith('Chapter 3'))
 
     # TOC
@@ -179,7 +179,7 @@ with sync_playwright() as p:
     page.get_by_label('Back to library').click()
     page.wait_for_selector('.card')
     where = page.locator('.card .where').inner_text()
-    check(f'library shows progress ({where})', 'p. 3/4' in where)
+    check(f'library shows progress ({where})', 'p. 3' in where)
     shot(page, '14-library-progress')
 
     # Export EPUB from the library card (phone)
@@ -207,7 +207,7 @@ with sync_playwright() as p:
     page.wait_for_selector('.card', timeout=10000)
     page.locator('.card .cover').click()
     page.wait_for_selector('.flow [data-b]')
-    check('works offline', page.locator('.flow h3').count() >= 4)
+    check('works offline', page.locator('.flow :is(h2,h3,h4)', has_text='Chapter').count() == 4)
     ctx.set_offline(False)
 
     # Share target (what Android does when you share a PDF to the app)

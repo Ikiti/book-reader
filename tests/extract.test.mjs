@@ -53,5 +53,31 @@ const iRight = all.indexOf('The right column starts here');
 const iLast = all.indexOf('This is the last paragraph');
 check('two-column order', iLeft > 0 && iRight > iLeft && iLast > iRight);
 check('toc from outline', model.toc.length === 4 && model.toc.every((t, i) => text(model.blocks[t.b]).startsWith(`Chapter ${i + 1}`)));
+// ---- samples/tech-sample.pdf: book-style layouts (contents, page labels, code, notes, index) ----
+{
+  const tdata = new Uint8Array(fs.readFileSync(path.join(here, '../samples/tech-sample.pdf')));
+  const tpdf = await pdfjs.getDocument({ data: tdata, verbosity: 0 }).promise;
+  const { model: m } = await extractBook(pdfjs, tpdf, { cropper: async (_p, rects) => rects.map(() => fakeBlob) });
+  const B = m.blocks;
+  const T = (b) => (b ? (b.text != null ? b.text : text(b)) : '');
+  check('tech: printed page labels', m.labels.join(',') === 'v,1,2,3,4,5,6');
+  check('tech: letter-spaced titles repaired', B.some((b) => b.t === 'h' && T(b) === 'CONTENTS') && B.some((b) => b.t === 'h' && T(b) === '1 GETTING STARTED'));
+  const tl = B.filter((b) => b.t === 'tl');
+  check('tech: contents lines keep page numbers', tl.map((b) => b.num).join(',') === '1,2,4,6');
+  check('tech: contents lines link to their headings', tl.every((b) => b.to != null && B[b.to].t === 'h' && T(B[b.to]).toLowerCase().includes(T(b).toLowerCase())));
+  check('tech: contents sub-entries indented', tl[1].lvl === 1 && tl[0].lvl === 0);
+  check('tech: bullets with a separate bullet glyph', B.filter((b) => b.li).length === 3);
+  const code = B.find((b) => b.t === 'code');
+  check('tech: code keeps lines and indentation', code && code.text === 'sudo apt install -y \\\n    python3-pip binutils\npip install pefile   # parse PE files');
+  check('tech: listing caption follows code', T(B[B.indexOf(code) + 1]).startsWith('Listing 1-1'));
+  const note = B.find((b) => b.note);
+  check('tech: NOTE box from margin label', note && note.note === 'NOTE' && T(note).startsWith('If the installation fails'));
+  check('tech: running footers removed', !B.some((b) => /Chapter 1$|Getting Started \d$|^\d+ Index$/.test(T(b))));
+  const il = B.filter((b) => b.t === 'il');
+  check('tech: index lines', il.length === 15 && il.some((b) => b.lvl === 1 && T(b) === 'virtual machine, 1'));
+  check('tech: wrapped index entry joined', il.some((b) => T(b) === 'command line tools for executable files, 2, 4'));
+  check('tech: index title is a heading, first on its page', B.find((b) => b.pg === 6).t === 'h');
+}
+
 console.log(failed ? `${failed} FAILED` : 'ALL PASSED');
 process.exit(failed ? 1 : 0);

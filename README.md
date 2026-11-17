@@ -15,13 +15,18 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
 ## Features by priority
 
 ### P1: done and tested
-1. **PDF → EPUB 3.** Use the "PDF → EPUB" button in the app or `tools/pdf2epub.mjs`. The output passes the official epubcheck 5.2.1 validator with 0 errors and 0 warnings.
-   - Rebuilds paragraphs from PDF lines: joins wrapped lines, removes end-of-line hyphens and keeps bold and italic.
-   - Chapters and table of contents come from the PDF bookmarks, or from the headings it detects when there are none. There is one XHTML file per chapter.
-   - **Pictures** are cut from the page as JPEG, including vector charts. **Captions** become `<figcaption>`.
-   - **Tables** become real tables, with merged cells, header rows, and journal-style tables that only have horizontal rules.
-   - **Two-column articles** are read column by column.
-   - Running headers, footers and page numbers are removed from the text. The **original page numbers are kept** as EPUB page markers and a page list, so citations still match.
+1. **PDF → EPUB 3.** Use the "PDF → EPUB" button in the app or `tools/pdf2epub.mjs`. The output passes the official epubcheck 5.2.1 validator with 0 errors and 0 warnings, including on a 402-page technical book.
+   - **Text:** rebuilds paragraphs from the PDF's lines, joins hyphenated words and keeps bold, italic and `inline code`. Bullet lists stay lists.
+   - **Chapters:** chapters and table of contents come from the PDF bookmarks, or from detected headings when there are none. Heading levels follow the bookmarks, and there is one XHTML file per chapter.
+   - **Printed page numbers:** pages carry the book's own numbering (i, ii … xxvi, 1, 2 …), taken from the PDF's page labels or read from its headers and footers. EPUB readers can show "page 53", and citations still match.
+   - **The book's own contents pages:** each line becomes a link to its chapter, with the page number right-aligned. Index pages stay one entry per line, with sub-entries indented.
+   - **Code listings** (monospace fonts) keep their line breaks, indentation and columns. Wide listings get a smaller font in the EPUB.
+   - **Note / Warning / Tip boxes** become marked boxes.
+   - **Pictures:** cut from the page as JPEG, including vector diagrams with their labels. Text that wraps around a picture is kept out of the image. **Captions** ("Figure 2-1", "Listing 3-4", "Table 1-1") become `<figcaption>`.
+   - **Tables** become real tables: merged cells, header rows, ruled rows, and journal-style tables with only horizontal rules. Rule-framed code and box-and-arrow diagrams are recognised and not mistaken for tables.
+   - **Letter-spaced titles** ("C O N T E N T S") are repaired using the same words found elsewhere in the book.
+   - **Running headers/footers** ("Chapter 1", "A Visit to the Dark Web 3") and page numbers are removed from the text.
+   - **Two-column layouts** are read column by column.
    - Cover image, title, author and language. **Hebrew and Arabic** get right-to-left text, tables and page order.
 2. **Library** stored on the device. It skips duplicates and asks the browser not to delete it when storage is low.
 3. **Reader**
@@ -162,6 +167,7 @@ python -m http.server 8080 &  python tests/e2e.py --shots shots/   # full browse
 ```
 
 ### Known limits
-- Complex magazine layouts (three or more columns, text wrapped around pictures) may read out of order. The original page view is always there.
+- Complex magazine layouts (three or more columns, side notes) may read out of order. The original page view is always there.
 - Footnotes currently stay where they are printed. Equations become plain text.
 - Tables without any lines read as paragraphs.
+- Books converted by an older version: use Library → ⋮ → **Re-process** to get the improvements.

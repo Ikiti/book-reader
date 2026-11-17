@@ -100,6 +100,17 @@ body.drop .drop-hint { display: grid; place-items: center; position: fixed; inse
 [data-theme="dark"] .flow figure img, [data-theme="black"] .flow figure img { filter: brightness(.9); }
 .flow figure.scan img { border: 1px solid var(--border); }
 .flow figure figcaption { font: .78rem var(--ui-font); margin-top: .4em; }
+.flow pre.code { font: .78em/1.4 ui-monospace, "Cascadia Mono", Consolas, "Roboto Mono", monospace; background: var(--code); border-left: 3px solid var(--border); padding: .6em .8em; margin: 1em 0; overflow-x: auto; white-space: pre; border-radius: 4px; }
+.flow code { font-family: ui-monospace, "Cascadia Mono", Consolas, "Roboto Mono", monospace; font-size: .9em; }
+.flow pre.code code { font-size: 1em; }
+.flow .note { margin: 1em 0; padding: .5em .9em; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 0 6px 6px 0; }
+.flow .note-label { font: 700 .7em var(--ui-font); letter-spacing: .08em; color: var(--accent); }
+.flow p.toc-line { margin: .3em 0; display: flex; gap: 1em; justify-content: space-between; align-items: baseline; }
+.flow p.toc-line a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.flow p.toc-line .pn { color: var(--muted); font-size: .85em; white-space: nowrap; }
+.flow p.toc-line.l1 { padding-left: 1.4em; } .flow p.toc-line.l2 { padding-left: 2.8em; }
+.flow p.index-line { margin: 0; padding-left: 1.4em; text-indent: -1.4em; font-size: .92em; }
+.flow p.index-line.l1 { margin-left: 1.2em; } .flow p.index-line.l2 { margin-left: 2.4em; }
 .flow mark.hl { background: var(--hl); color: inherit; border-radius: 2px; cursor: pointer; }
 .end { text-align: center; font: .85rem var(--ui-font); margin: 3rem 0 1rem; }
 

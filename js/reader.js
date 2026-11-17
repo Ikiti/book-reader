@@ -5,6 +5,7 @@ import { deleteNote, listNotes, newNote, saveNote, bookNotesMarkdown } from './n
 import { PROVIDERS, copy, defaultProviderId, sendNote } from './notes/providers.js';
 import { FONTS, THEMES, settings, updateSettings } from './settings.js';
 import { $, download, fmtDate, h, sheet, toast } from './ui.js';
+import { EXTRACT_VERSION } from './pdf/extract.js';
 
 export async function openReader(root, bookId, { onBack }) {
   const book = await get('books', bookId);
@@ -32,6 +33,12 @@ class Reader {
       return start;
     });
     this.total = Math.max(1, acc);
+  }
+
+  /** Printed page number (book's own numbering) for a page index. */
+  label(pg) {
+    const l = this.model.labels?.[pg];
+    return l && !String(l).startsWith('#') ? String(l) : String(pg + 1);
   }
 
   pctAt(b, off = 0) {
@@ -66,6 +73,7 @@ class Reader {
       this.selbar,
     );
     this.renderFlow();
+    if ((this.model.v || 1) < EXTRACT_VERSION) toast('This book was converted by an older version. Library → ⋮ → Re-process for better results.', 6000);
     this.notes = await listNotes(book.id);
     this.paintHighlights();
     this.restore();
@@ -92,6 +100,14 @@ class Reader {
       document.removeEventListener('visibilitychange', onHide);
       document.body.classList.remove('immersive');
     });
+    // Contents lines inside the book link to their chapter.
+    this.flow.addEventListener('click', (e) => {
+      const a = e.target.closest('a[data-to]');
+      if (!a) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.goToBlock(+a.dataset.to, 0);
+    }, true);
     // Tap on the text (without selecting) toggles the bars, like an e-reader.
     this.flow.addEventListener('click', (e) => {
       if (e.target.closest('a,button,mark,img,table') || String(getSelection())) return;
@@ -120,10 +136,10 @@ class Reader {
     model.blocks.forEach((b, i) => {
       if (b.pg !== curPg) {
         curPg = b.pg;
-        section = h('section.pg', { dataset: { pg: b.pg + 1 } });
+        section = h('section.pg', { dataset: { pg: this.label(b.pg) } });
         frag.append(section);
       }
-      section.append(renderBlock(b, i));
+      section.append(renderBlock(b, i, this));
     });
     if (!model.blocks.length) {
       frag.append(h('div.empty', h('p', 'No text was found in this PDF.'),
@@ -187,7 +203,7 @@ class Reader {
     const atEnd = scrollY + innerHeight >= document.documentElement.scrollHeight - 4;
     const pct = atEnd ? 1 : this.pctAt(b, off);
     const ch = this.chapterAt(b);
-    this.pos = { b, off, page: blk.pg + 1, pct, chapter: ch?.title || '' };
+    this.pos = { b, off, pgi: blk.pg, page: this.label(blk.pg), pct, chapter: ch?.title || '' };
     this.showStatus();
     this.save();
   }
@@ -196,7 +212,7 @@ class Reader {
     const p = this.pos;
     if (!p) return;
     this.chapterEl.textContent = p.chapter || '';
-    this.status.textContent = `Page ${p.page} of ${this.model.pageCount} · ${Math.round(p.pct * 100)}%`;
+    this.status.textContent = `Page ${p.page} · ${Math.round(p.pct * 100)}%`;
   }
 
   save(now = false) {
@@ -211,7 +227,7 @@ class Reader {
 
   restore() {
     const p = this.pos;
-    if (!p) { this.track(); return; }
+    if (!p || !this.model.blocks[p.b]) { this.pos = null; this.track(); return; }
     this.goToBlock(p.b, p.off || 0);
   }
 
@@ -230,7 +246,7 @@ class Reader {
   // ---------- original pages ----------
   async toggleMode() {
     const toPages = this.mode === 'flow';
-    const page = this.pos?.page || 1;
+    const page = (this.pos?.pgi ?? 0) + 1; // 1-based PDF page
     if (toPages) {
       await this.ensurePages();
       this.mode = 'pages';
@@ -262,7 +278,7 @@ class Reader {
     const holders = this.model.pages.map((p, i) => h('div.page', {
       dataset: { page: i + 1 },
       style: { aspectRatio: `${p.w} / ${p.h}` },
-    }, h('span.pno.muted', i + 1)));
+    }, h('span.pno.muted', this.label(i))));
     const zoomBar = h('div.zoom',
       h('button.icon', { onclick: () => this.setZoom(this.zoom - 0.25), 'aria-label': 'Zoom out' }, '−'),
       h('button.icon', { onclick: () => this.setZoom(1), 'aria-label': 'Fit width' }, 'Fit'),
@@ -284,7 +300,7 @@ class Reader {
         const el = e.target;
         const n = +el.dataset.page;
         if (e.isIntersecting && !rendered.has(n)) { rendered.set(n, 0); this.renderPageEl(el).catch(console.warn); }
-        else if (!e.isIntersecting && rendered.has(n) && Math.abs(n - (this.pos?.page || 1)) > 4) {
+        else if (!e.isIntersecting && rendered.has(n) && Math.abs(n - ((this.pos?.pgi ?? 0) + 1)) > 4) {
           el.querySelector('canvas')?.remove();
           rendered.delete(n);
         }
@@ -295,7 +311,7 @@ class Reader {
   }
 
   setZoom(z) {
-    const page = this.pos?.page || 1;
+    const page = (this.pos?.pgi ?? 0) + 1;
     this.zoom = Math.min(4, Math.max(0.5, z));
     this.pagesEl.style.setProperty('--zoom', this.zoom);
     this.reRenderPages?.();
@@ -308,7 +324,7 @@ class Reader {
     if (!el) return;
     const page = +el.dataset.page;
     const b = Math.max(0, this.model.blocks.findIndex((x) => x.pg + 1 >= page));
-    this.pos = { b, off: 0, page, pct: this.pctAt(b), chapter: this.chapterAt(b)?.title || '' };
+    this.pos = { b, off: 0, pgi: page - 1, page: this.label(page - 1), pct: this.pctAt(b), chapter: this.chapterAt(b)?.title || '' };
     this.showStatus();
     this.save();
   }
@@ -338,7 +354,7 @@ class Reader {
     const s = this.selection;
     if (!s) return null;
     const blk = this.model.blocks[s.block];
-    return newNote({ bookId: this.book.id, quote: s.text, chapter: this.chapterAt(s.block)?.title || '', page: blk ? blk.pg + 1 : 0, block: s.block });
+    return newNote({ bookId: this.book.id, quote: s.text, chapter: this.chapterAt(s.block)?.title || '', page: blk ? this.label(blk.pg) : '', block: s.block });
   }
 
   clearSelection() {
@@ -407,7 +423,7 @@ class Reader {
     const cur = this.chapterAt(this.pos?.b ?? 0);
     const items = this.model.toc.map((t) => h(`button.toc-item.l${t.level}${t === cur ? '.current' : ''}`, {
       onclick: () => { s.close(); this.jumpTo(t.b); },
-    }, h('span', t.title), h('span.muted', t.pg + 1)));
+    }, h('span', t.title), h('span.muted', this.label(t.pg))));
     const s = sheet('Contents', items.length ? h('nav.toc', items) : h('p.muted', 'This document has no chapters or headings.'), { side: true });
     s.el.querySelector('.current')?.scrollIntoView({ block: 'center' });
   }
@@ -505,11 +521,18 @@ class Reader {
   }
 }
 
-function renderBlock(b, i) {
+function renderBlock(b, i, reader) {
   const data = { b: i };
   switch (b.t) {
     case 'h': return h(`h${Math.min(6, b.l + 1)}`, { dataset: data, dir: 'auto' }, runs(b.runs));
-    case 'p': return h(`p${b.li ? '.li' : ''}`, { dataset: data, dir: 'auto' }, runs(b.runs));
+    case 'p':
+      if (b.note) return h('div.note', { dataset: data, dir: 'auto' }, h('span.note-label', b.note), ' ', runs(b.runs));
+      return h(`p${b.li ? '.li' : ''}`, { dataset: data, dir: 'auto' }, runs(b.runs));
+    case 'code': return h('pre.code', { dataset: data }, h('code', b.text));
+    case 'tl': return h(`p.toc-line.l${b.lvl || 0}`, { dataset: data, dir: 'auto' },
+      b.to != null ? h('a', { href: '#', dataset: { to: b.to } }, runs(b.runs)) : runs(b.runs),
+      h('span.pn', b.num));
+    case 'il': return h(`p.index-line.l${b.lvl || 0}`, { dataset: data, dir: 'auto' }, runs(b.runs));
     case 'img': return h('figure.fig', { dataset: data },
       h('img', { dataset: { k: b.k }, alt: '', width: b.w, height: b.h, style: { aspectRatio: `${b.w} / ${b.h}`, maxWidth: `min(100%, ${Math.round(b.w * 1.6)}px)` } }));
     case 'table': return h('div.tbl', { dataset: data },
@@ -518,14 +541,19 @@ function renderBlock(b, i) {
       b.k != null ? h('img.snap', { dataset: { k: b.k }, alt: 'Original table', width: b.w, height: b.h }) : null,
       b.k != null ? h('button.snap-btn.small', 'Show original') : null);
     case 'scan': return h('figure.fig.scan', { dataset: data },
-      h('img', { dataset: { k: b.k }, alt: `Scanned page ${b.pg + 1}`, width: b.w, height: b.h, style: { aspectRatio: `${b.w} / ${b.h}` } }),
-      h('figcaption.muted', 'Scanned page (no text layer) — see README → OCR'));
+      h('img', { dataset: { k: b.k }, alt: `Scanned page ${reader.label(b.pg)}`, width: b.w, height: b.h, style: { aspectRatio: `${b.w} / ${b.h}` } }),
+      b.pg === 0 ? null : h('figcaption.muted', 'Picture of the page (no text in the PDF) — see README → OCR'));
     default: return h('div', { dataset: data });
   }
 }
 
 function runs(list) {
-  return (list || []).map((r) => (r.b && r.i ? h('b', h('i', r.s)) : r.b ? h('b', r.s) : r.i ? h('i', r.s) : r.s));
+  return (list || []).map((r) => {
+    let el = r.m ? h('code', r.s) : r.s;
+    if (r.i) el = h('i', el);
+    if (r.b) el = h('b', el);
+    return el;
+  });
 }
 
 /** Wrap the first occurrence of (the start of) `quote` inside `el` with <mark>. */

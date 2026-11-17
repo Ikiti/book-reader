@@ -80,7 +80,10 @@ async function convert(file, opts) {
         const h = Math.min(canvas.height - y, Math.ceil((r.y1 - r.y0) * scale));
         if (w < 2 || h < 2) { out.push(null); continue; }
         const c = createCanvas(w, h);
-        c.getContext('2d').drawImage(canvas, x, y, w, h, 0, 0, w, h);
+        const cx = c.getContext('2d');
+      cx.drawImage(canvas, x, y, w, h, 0, 0, w, h);
+      cx.fillStyle = '#fff';
+      for (const m of r.masks || []) cx.fillRect(m.x0 * scale - x, m.y0 * scale - y, (m.x1 - m.x0) * scale, (m.y1 - m.y0) * scale);
         out.push(await jpeg(c));
       }
       page.cleanup();

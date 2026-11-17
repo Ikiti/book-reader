@@ -38,7 +38,7 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
     if (cover) urls.push(cover);
     const p = b.progress;
     const pct = Math.round((p?.pct || 0) * 100);
-    const where = p ? [p.chapter, `p. ${p.page}/${b.pageCount}`].filter(Boolean).join(' · ') : `${b.pageCount} page${b.pageCount === 1 ? '' : 's'} · not started`;
+    const where = p ? [p.chapter, `p. ${p.page}`, `${pct}%`].filter(Boolean).join(' · ') : `${b.pageCount} page${b.pageCount === 1 ? '' : 's'} · not started`;
     return h('article.card', { dataset: { id: b.id } },
       h('button.cover', { onclick: () => onOpen(b.id), 'aria-label': `Open ${b.title}` },
         cover ? h('img', { src: cover, alt: '', loading: 'lazy' }) : h('div.nocover', b.title.slice(0, 1)),

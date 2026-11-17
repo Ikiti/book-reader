@@ -17,7 +17,7 @@ export function findRegions(pa) {
   // 1. Tables from ruled lines.
   const used = new Set();
   for (const comp of groupRules(lineComponents(pa.segments))) {
-    const t = buildTable(comp, pa.frags);
+    const t = buildTable(comp, pa.frags, pa.shapes);
     if (t) {
       regions.push(t);
       comp.forEach((s) => used.add(s));
@@ -59,8 +59,39 @@ export function findRegions(pa) {
   // Images and figures that touch each other are one illustration.
   const pics = mergeRects(regions.filter((r) => r.kind === 'image' || r.kind === 'figure').map((r) => ({ ...r })), 3)
     .map((r) => ({ ...r, kind: 'image' }));
+  absorbLabels(pics, pa.frags);
   const out = [...regions.filter((r) => r.kind === 'table' || r.kind === 'scan'), ...pics];
   return { regions: out, scanned };
+}
+
+// "Figure 3.", "Fig. 2:", "Table IV", "Listing 1-1", "איור 1" … (a keyword followed by a number).
+export const CAPTION = /^(fig(ure)?\.?|image|illustration|photo|chart|diagram|map|plate|table|tab\.|listing|exhibit|scheme|example|איור|תמונה|טבלה|תרשים|לוח)\s*([0-9ivxlc]+|[A-Z])\b[-.:)\s\d]*/i;
+
+/**
+ * Small text right next to a picture (diagram titles, labels) is part of it.
+ * Grow each picture to swallow such fragments until nothing changes.
+ */
+function absorbLabels(pics, frags) {
+  if (!pics.length || !frags.length) return;
+  const body = medianFs(frags);
+  for (const r of pics) {
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const f of frags) {
+        const b = fragBox(f);
+        if (containsPoint(r, ...center(b), 1)) continue;
+        if (f.fs >= body * 0.95 || f.text.length > 60 || CAPTION.test(f.text)) continue;
+        if (!overlaps(r, b, 1.5 * f.fs)) continue;
+        Object.assign(r, union(r, b));
+        changed = true;
+      }
+    }
+  }
+}
+
+function medianFs(frags) {
+  const arr = frags.flatMap((f) => Array(Math.min(50, f.chars)).fill(f.fs)).sort((a, b) => a - b);
+  return arr[arr.length >> 1] || 10;
 }
 
 export function fragBox(f) {
@@ -117,7 +148,7 @@ function groupRules(comps) {
   return [...rest, ...groups];
 }
 
-function buildTable(segs, frags) {
+function buildTable(segs, frags, shapes = []) {
   const hs = segs.filter((s) => s.kind === 'h');
   const vs = segs.filter((s) => s.kind === 'v');
   if (hs.length < 2) return null;
@@ -125,6 +156,10 @@ function buildTable(segs, frags) {
   if (box.x1 - box.x0 < 40) return null;
   const inside = frags.filter((f) => containsPoint(box, ...center(fragBox(f)), 1));
   if (inside.length < 2) return null;
+  // A code listing framed by rules is code, not a table.
+  if (inside.every((f) => f.mono)) return null;
+  // Boxes joined by arrows are a diagram, not a table.
+  if (shapes.some((sh) => sh.curves && overlaps(sh, box, 2))) return null;
 
   const ys = clusterValues(hs.map((s) => s.y), TOL);
   const xs = clusterValues(vs.map((s) => s.x), TOL);
@@ -134,7 +169,7 @@ function buildTable(segs, frags) {
     // Guard against page-wide header/footer rules: rule tables are short and hold short cells.
     const avgLen = inside.reduce((n, f) => n + f.text.length, 0) / inside.length;
     if (box.y1 - box.y0 > 400 || avgLen > 40) return null;
-    table = rulesTable(box, inside);
+    table = rulesTable(box, inside, clusterValues(hs.map((h) => h.y), TOL));
   }
   if (!table) return null;
   // Right-to-left tables (Hebrew, Arabic): the first column is the rightmost one.
@@ -196,8 +231,8 @@ function gridTable(xs, ys, hs, vs, frags) {
   return rows;
 }
 
-/** Horizontal rules only (book/journal style): rows from baselines, columns from vertical gaps. */
-function rulesTable(box, frags) {
+/** Horizontal rules only (book/journal style): rows from rules or baselines, columns from vertical gaps. */
+function rulesTable(box, frags, ruleYs = []) {
   const fs = Math.min(...frags.map((f) => f.fs));
   // Column boundaries = x ranges not covered by any fragment.
   const iv = frags.map((f) => [f.x0, f.x1]).sort((a, b) => a[0] - b[0]);
@@ -208,9 +243,29 @@ function rulesTable(box, frags) {
     else cols.push([a, b]);
   }
   if (cols.length < 2) return null;
+  const inCol = (f, [a, b]) => f.x0 >= a - 1 && f.x1 <= b + 1;
+  // Rules between every row (ruled rows): each band between two rules is one row, even if it wraps.
+  const bands = [];
+  for (let k = 0; k + 1 < ruleYs.length; k++) {
+    const band = frags.filter((f) => f.y > ruleYs[k] && f.top < ruleYs[k + 1]);
+    if (band.length) bands.push(band);
+  }
+  // (Top/middle/bottom rules alone, as in journals, give 2 bands: use the baselines instead.)
+  if (bands.length >= 3 && bands.length >= ruleYs.length - 2) {
+    return bands.map((band) => cols.map((c) => cell(band.filter((f) => inCol(f, c)), 1, 1)));
+  }
   const rowsY = clusterValues(frags.map((f) => f.y), 0.5 * fs);
   if (rowsY.length < 2) return null;
-  return rowsY.map((y) => cols.map(([a, b]) => cell(frags.filter((f) => Math.abs(f.y - y) <= 0.5 * fs && f.x0 >= a - 1 && f.x1 <= b + 1), 1, 1)));
+  const rows = [];
+  for (const y of rowsY) {
+    const line = frags.filter((f) => Math.abs(f.y - y) <= 0.5 * fs);
+    const cells = cols.map((c) => line.filter((f) => inCol(f, c)));
+    const prev = rows[rows.length - 1];
+    // A line with an empty first column continues the row above (wrapped cell text).
+    if (prev && !cells[0].length && rows.length > 1) cells.forEach((c, i) => prev[i].push(...c));
+    else rows.push(cells);
+  }
+  return rows.map((r) => r.map((c) => cell(c, 1, 1)));
 }
 
 function cell(frags, cs, rs) {
@@ -219,6 +274,7 @@ function cell(frags, cs, rs) {
   for (const f of sorted) {
     if (!s) s = f.text;
     else if (/[A-Za-z]-$/.test(s) && /^[a-z]/.test(f.text)) s = s.slice(0, -1) + f.text;
+    else if (/\S{20,}$/.test(s) && !/\s/.test(f.text)) s += f.text; // a long URL/hash wrapped inside the cell
     else s += ' ' + f.text;
   }
   const c = { s };

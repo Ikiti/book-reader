@@ -67,6 +67,15 @@ check('Hebrew: language + RTL', heOpf.includes('<dc:language>he</dc:language>') 
 check('Hebrew: numbers and Latin in place', heText.includes('גם מספרים כמו 2026 ומילים באנגלית כמו EPUB צריכים'));
 check('Hebrew: table columns right-to-left', /<th>פורמט<\/th><th>זרימה<\/th>/.test(heText));
 
+const tech = await unzip(path.join(out, 'tech-sample.epub'));
+const tText = tech.filter((e) => e.name.startsWith('OEBPS/text/')).map((e) => e.data.toString('utf8')).join('');
+const tNav = tech.find((e) => e.name === 'OEBPS/nav.xhtml').data.toString('utf8');
+check('tech: page list uses printed numbers', /<a href="[^"]+#pg1">v<\/a>/.test(tNav) && /<a href="[^"]+#pg7">6<\/a>/.test(tNav));
+check('tech: contents lines are links', (tText.match(/<p[^>]*class="toc-line[^"]*"><a href="\.\.\/text\/ch\d+\.xhtml#b\d+">/g) || []).length === 4);
+check('tech: code listing as <pre> with caption', /<figure[^>]*class="listing"><pre><code>sudo apt install -y \\\n    python3-pip binutils/.test(tText) && tText.includes('<figcaption><i>Listing 1-1'));
+check('tech: note box', /<div[^>]*class="note"><p><b class="label">NOTE<\/b> <i>If the installation fails/.test(tText));
+check('tech: index lines', (tText.match(/class="index-line/g) || []).length === 15);
+
 if (process.env.EPUBCHECK) {
   for (const f of fs.readdirSync(out).filter((n) => n.endsWith('.epub'))) {
     let ok = true;

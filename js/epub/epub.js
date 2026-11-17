@@ -75,13 +75,22 @@ function splitFiles(model) {
 
 function runsXhtml(runs) {
   return (runs || []).map((r) => {
-    const t = esc(r.s);
-    return r.b && r.i ? `<b><i>${t}</i></b>` : r.b ? `<b>${t}</b>` : r.i ? `<i>${t}</i>` : t;
+    let t = esc(r.s);
+    if (r.m) t = `<code>${t}</code>`;
+    if (r.i) t = `<i>${t}</i>`;
+    if (r.b) t = `<b>${t}</b>`;
+    return t;
   }).join('');
 }
 
+/** Printed page label of a page index (falls back to the PDF page number). */
+const labelOf = (model, pg) => {
+  const l = model.labels?.[pg];
+  return l && !String(l).startsWith('#') ? String(l) : String(pg + 1);
+};
+
 // "Figure 3.", "Fig. 2:", "Table IV", "איור 1" … (a keyword followed by a number, not "Figures carry…").
-const CAPTION = /^(fig(ure)?\.?|image|illustration|photo|chart|diagram|map|plate|table|tab\.|exhibit|scheme|איור|תמונה|טבלה|תרשים|לוח)\s*([0-9ivxlc]+|[A-Z])\b[.:)\s-]?/i;
+const CAPTION = /^(fig(ure)?\.?|image|illustration|photo|chart|diagram|map|plate|table|tab\.|listing|exhibit|scheme|example|איור|תמונה|טבלה|תרשים|לוח)\s*([0-9ivxlc]+|[A-Z])\b[-.:)\s\d]*/i;
 
 /** The paragraph right after a picture/table, if it is its caption. */
 function captionAfter(model, i, end) {
@@ -103,8 +112,26 @@ function blockXhtml(b, i, model, ctx) {
     }
     case 'p': {
       if (!textOf(b).trim()) return '';
+      if (b.note) return `<div${id} class="note"><p${dir}><b class="label">${esc(b.note)}</b> ${runsXhtml(b.runs)}</p></div>`;
       return `<p${id}${b.li ? ' class="li"' : ''}${dir}>${runsXhtml(b.runs)}</p>`;
     }
+    case 'code': {
+      if (!b.text.trim()) return '';
+      const cap = captionAfter(model, i, ctx.end);
+      if (cap) ctx.skip.add(i + 1);
+      // Wide listings get a smaller font so their columns survive on a phone screen.
+      const width = Math.max(...b.text.split('\n').map((l) => l.length));
+      const size = width <= 60 ? '' : width <= 75 ? ' class="w1"' : width <= 90 ? ' class="w2"' : ' class="w3"';
+      const pre = `<pre${size}><code>${esc(b.text)}</code></pre>`;
+      return cap ? `<figure${id} class="listing">${pre}<figcaption>${runsXhtml(cap.runs)}</figcaption></figure>` : `<div${id} class="listing">${pre}</div>`;
+    }
+    case 'tl': {
+      const t = runsXhtml(b.runs);
+      const href = b.to != null && ctx.fileOf.has(b.to) ? ctx.link(b.to) : null;
+      return `<p${id} class="toc-line l${b.lvl || 0}"${dir}>${href ? `<a href="${href}">${t}</a>` : t} <span class="pn">${esc(b.num)}</span></p>`;
+    }
+    case 'il':
+      return `<p${id} class="index-line l${b.lvl || 0}"${dir}>${runsXhtml(b.runs)}</p>`;
     case 'img':
     case 'scan': {
       const img = ctx.images.get(b.k);
@@ -125,9 +152,10 @@ function blockXhtml(b, i, model, ctx) {
         }).join('');
         return `<tr>${cells}</tr>`;
       }).join('\n');
-      const cap = captionAfter(model, i, ctx.end);
+      const before = ctx.capBefore.get(i);
+      const cap = before ? null : captionAfter(model, i, ctx.end);
       if (cap) ctx.skip.add(i + 1);
-      return `<figure${id} class="table"><table>\n${rows}\n</table>${cap ? `<figcaption>${runsXhtml(cap.runs)}</figcaption>` : ''}</figure>`;
+      return `<figure${id} class="table">${before ? `<figcaption>${runsXhtml(before.runs)}</figcaption>` : ''}<table>\n${rows}\n</table>${cap ? `<figcaption>${runsXhtml(cap.runs)}</figcaption>` : ''}</figure>`;
     }
     default:
       return '';
@@ -156,9 +184,27 @@ figure { margin: 1em 0; text-align: center; page-break-inside: avoid; break-insi
 figure img { max-width: 100%; height: auto; }
 figure.scan img { border: 1px solid #ccc; }
 figure.table { overflow-x: auto; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: monospace; font-size: 0.8em; line-height: 1.35; margin: 0.8em 0; padding: 0.5em 0.6em; background: #f3f3f1; border-left: 3px solid #bbb; }
+code { font-family: monospace; font-size: 0.92em; }
+pre code { font-size: 1em; }
+pre.w1 { font-size: 0.68em; }
+pre.w2 { font-size: 0.58em; }
+pre.w3 { font-size: 0.5em; }
+figure.listing { text-align: start; }
+div.note { margin: 1em 0; padding: 0.4em 0.8em; border-left: 3px solid #888; }
+div.note p { margin: 0.3em 0; }
+div.note .label { font-size: 0.75em; letter-spacing: 0.08em; }
+p.toc-line { margin: 0.25em 0; text-indent: 0; overflow: hidden; }
+p.toc-line.l1 { margin-left: 1.5em; }
+p.toc-line.l2 { margin-left: 3em; }
+p.toc-line .pn { float: right; padding-left: 1em; color: #777; }
+p.toc-line a { text-decoration: none; }
+p.index-line { margin: 0; padding-left: 1.5em; text-indent: -1.5em; font-size: 0.92em; }
+p.index-line.l1 { margin-left: 1.2em; }
+p.index-line.l2 { margin-left: 2.4em; }
 figcaption { font-size: 0.85em; font-style: italic; margin-top: 0.4em; }
 table { border-collapse: collapse; margin: 0 auto; font-size: 0.9em; }
-th, td { border: 1px solid #888; padding: 0.25em 0.5em; text-align: start; vertical-align: top; }
+th, td { border: 1px solid #888; padding: 0.25em 0.5em; text-align: start; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
 th { font-weight: bold; }
 body.cover { margin: 0; padding: 0; text-align: center; }
 body.cover img { max-width: 100%; max-height: 100vh; }
@@ -185,7 +231,11 @@ export async function buildEpub({ id, title, author = '', model, images = new Ma
   files.forEach(([s, e], fi) => { for (let b = s; b < e; b++) fileOf.set(b, `text/ch${String(fi + 1).padStart(3, '0')}.xhtml`); });
 
   const ids = new Set(model.toc.map((t) => t.b));
-  const ctx = { ids, images, used: new Set(), skip: new Set(), rtl, end: 0 };
+  model.blocks.forEach((b) => { if (b.t === 'tl' && b.to != null) ids.add(b.to); });
+  const ctx = {
+    ids, images, used: new Set(), skip: new Set(), capBefore: new Map(), rtl, end: 0, fileOf,
+    link: (to) => `../${fileOf.get(to)}#b${to}`,
+  };
   const pageTargets = []; // [pageNumber, href]
   const chapterDocs = [];
   let lastPg = -1;
@@ -199,10 +249,18 @@ export async function buildEpub({ id, title, author = '', model, images = new Ma
       while (lastPg < blk.pg) {
         lastPg++;
         const n = lastPg + 1;
-        parts.push(`<span epub:type="pagebreak" role="doc-pagebreak" id="pg${n}" aria-label="${n}"></span>`);
-        pageTargets.push([n, `${name}#pg${n}`]);
+        const label = labelOf(model, lastPg);
+        parts.push(`<span epub:type="pagebreak" role="doc-pagebreak" id="pg${n}" aria-label="${esc(label)}"></span>`);
+        pageTargets.push([label, `${name}#pg${n}`]);
       }
-      if (ctx.skip.has(b)) continue; // already emitted as a caption
+      if (ctx.skip.has(b)) { if (ids.has(b)) parts.push(`<div id="b${b}"></div>`); continue; } // already emitted as a caption
+      if (cover && blk.t === 'scan' && blk.pg === 0) { if (ids.has(b)) parts.push(`<div id="b${b}"></div>`); continue; } // the cover page
+      // "Table 1-1: …" printed above its table: move it into the table's figure.
+      const nextBlk = model.blocks[b + 1];
+      if (blk.t === 'p' && nextBlk?.t === 'table' && b + 1 < e && !ids.has(b) && /^(table|tab\.|טבלה)\s*[\dIVX]/i.test(textOf(blk).trim()) && textOf(blk).length < 300) {
+        ctx.capBefore.set(b + 1, blk);
+        continue;
+      }
       const x = blockXhtml(blk, b, model, ctx);
       if (x) parts.push(x);
       else if (ids.has(b)) parts.push(`<div id="b${b}"></div>`); // keep TOC links valid
@@ -217,10 +275,14 @@ export async function buildEpub({ id, title, author = '', model, images = new Ma
   if (!tocEntries.length) tocEntries.push({ level: 1, title: title || 'Start', href: chapterDocs[0].name });
   const tree = nestToc(tocEntries);
   const navOl = (nodes) => `<ol>\n${nodes.map((nd) => `<li><a href="${nd.href}">${esc(nd.title)}</a>${nd.kids.length ? navOl(nd.kids) : ''}</li>`).join('\n')}\n</ol>`;
+  // NCX: entries pointing at the same place must share a playOrder.
   let order = 0;
+  let npId = 0;
+  const playOf = new Map();
   const ncxPoints = (nodes) => nodes.map((nd) => {
-    order++;
-    return `<navPoint id="np${order}" playOrder="${order}"><navLabel><text>${esc(nd.title)}</text></navLabel><content src="${nd.href}"/>${ncxPoints(nd.kids)}</navPoint>`;
+    if (!playOf.has(nd.href)) playOf.set(nd.href, ++order);
+    npId++;
+    return `<navPoint id="np${npId}" playOrder="${playOf.get(nd.href)}"><navLabel><text>${esc(nd.title)}</text></navLabel><content src="${nd.href}"/>${ncxPoints(nd.kids)}</navPoint>`;
   }).join('\n');
   const depth = (nodes) => (nodes.length ? 1 + Math.max(...nodes.map((nd) => depth(nd.kids))) : 0);
 
@@ -231,7 +293,7 @@ ${navOl(tree)}
 </nav>
 <nav epub:type="page-list" id="page-list" hidden=""><h2>Pages</h2>
 <ol>
-${pageTargets.map(([n, href]) => `<li><a href="${href}">${n}</a></li>`).join('\n')}
+${pageTargets.map(([label, href]) => `<li><a href="${href}">${esc(label)}</a></li>`).join('\n')}
 </ol>
 </nav>
 <nav epub:type="landmarks" id="landmarks" hidden=""><h2>Landmarks</h2>
@@ -248,7 +310,7 @@ ${cover ? '<li><a epub:type="cover" href="cover.xhtml">Cover</a></li>\n' : ''}<l
 <meta name="dtb:uid" content="${uid}"/>
 <meta name="dtb:depth" content="${Math.max(1, depth(tree))}"/>
 <meta name="dtb:totalPageCount" content="${model.pageCount}"/>
-<meta name="dtb:maxPageNumber" content="${model.pageCount}"/>
+<meta name="dtb:maxPageNumber" content="${Math.max(0, ...(model.labels || []).map((l) => (/^\d+$/.test(l) ? +l : 0)), model.labels ? 0 : model.pageCount)}"/>
 </head>
 <docTitle><text>${esc(title)}</text></docTitle>
 <navMap>

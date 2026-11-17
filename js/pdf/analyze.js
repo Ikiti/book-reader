@@ -9,6 +9,7 @@ const mul = (m1, m2) => [
 ];
 const apply = (m, x, y) => [x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5]];
 
+export const WORD_BREAK = '\uE000'; // private-use char: known word break inside letter-spaced text
 const SPACE_GAP = 0.12; // gap (in em) that implies a space between two text items
 const SPLIT_GAP = 1.0; // gap (in em) that splits a line into separate fragments (columns, table cells)
 
@@ -24,24 +25,28 @@ export async function analyzePage(pdfjs, page) {
   const items = toItems(pdfjs, tc, vp, page);
   const frags = buildFragments(items);
   const gfx = walkOperators(pdfjs, opList, vp);
-  return { w: vp.width, h: vp.height, frags, gutter: frags.gutter, ...gfx };
+  return { w: vp.width, h: vp.height, frags, gutter: frags.gutter, gutterInfo: frags.gutterInfo, ...gfx };
 }
 
 function fontInfo(page, fontName) {
   let name = '';
   let bold = false;
   let italic = false;
+  let mono = false;
   try {
     if (page.commonObjs.has(fontName)) {
       const f = page.commonObjs.get(fontName);
       name = f?.name || '';
       bold = !!(f?.bold || f?.black);
       italic = !!f?.italic;
+      mono = !!f?.isMonospace;
     }
   } catch { /* font not loaded: fall back to name-less */ }
+  name = name.replace(/^[A-Z]{6}\+/, ''); // drop the subset prefix (ABCDEF+FontName)
   if (/bold|black|heavy|semibold|demi/i.test(name)) bold = true;
   if (/italic|oblique/i.test(name)) italic = true;
-  return { name, bold, italic };
+  if (/mono|courier|consol|menlo|monaco|inconsolata|sourcecode|code|typewriter|fixed|cascadia|lucidaconsole|\btt\b|cmtt|letter ?gothic/i.test(name)) mono = true;
+  return { name, bold, italic, mono };
 }
 
 function toItems(pdfjs, tc, vp, page) {
@@ -63,7 +68,7 @@ function toItems(pdfjs, tc, vp, page) {
     out.push({
       s: it.str, x0: x, x1: x + w, y, fs,
       top: y - fs * 0.85, bottom: y + fs * 0.2,
-      b: f.bold, i: f.italic, dir: it.dir, space,
+      b: f.bold, i: f.italic, m: f.mono, font: f.name, dir: it.dir, space,
     });
   }
   return out;
@@ -108,6 +113,7 @@ export function buildFragments(items) {
     frags.push(makeFragment(cur, line, spaces));
   }
   frags.gutter = gutter?.x ?? null;
+  frags.gutterInfo = gutter;
   return frags;
 }
 
@@ -144,11 +150,12 @@ function findGutter(lines) {
   const fewest = Math.min(...inBand.map((p) => p[1]));
   const cand = inBand.filter((p) => p[1] === fewest).map((p) => p[0]);
   x = cand.reduce((p, q) => (Math.abs(q - x) < Math.abs(p - x) ? q : p), cand[0]);
+  const band = { a: best.a, b: best.b };
   // Left/right baselines may not line up, so count each side separately.
   const left = lines.filter((l) => l.items.some((i) => i.x1 <= x)).length;
   const right = lines.filter((l) => l.items.some((i) => i.x0 >= x)).length;
   if (Math.min(left, right) < Math.max(4, 2 * min)) return null;
-  return { x };
+  return { x, band, cw, minX };
 }
 
 function makeFragment(its, _line, spaces) {
@@ -156,6 +163,7 @@ function makeFragment(its, _line, spaces) {
   const total = its.reduce((s, i) => s + i.s.length, 0);
   const rtl = rtlChars > total / 2;
   const ordered = rtl ? [...its].reverse() : its;
+  if (its.every((i) => i.m)) return monoFragment(its);
   const runs = [];
   let text = '';
   for (let k = 0; k < ordered.length; k++) {
@@ -166,27 +174,60 @@ function makeFragment(its, _line, spaces) {
       const gap = rtl ? prev.x0 - it.x1 : it.x0 - prev.x1;
       const between = spaces.some((sp) => sp.y === it.y && sp.x0 >= Math.min(prev.x1, it.x1) - 1 && sp.x0 <= Math.max(prev.x0, it.x0) + 1);
       const needSpace = (gap > SPACE_GAP * it.fs || between) && !/\s$/.test(text) && !/^\s/.test(s);
-      if (needSpace) s = ' ' + s;
+      // Between two letter-spaced pieces ("G E T T I N G" "S T A R T E D") the gap is a real word break:
+      // mark it so the repair step (extract.js) can tell it from the spaces between letters.
+      const tracked = (t) => /^(\S ){2,}\S$/.test(t.trim());
+      if (needSpace) s = (tracked(prev.s) && tracked(it.s) ? WORD_BREAK : ' ') + s;
     }
     text += s;
     const last = runs[runs.length - 1];
-    if (last && last.b === it.b && last.i === it.i) last.s += s;
-    else runs.push({ s, b: it.b, i: it.i });
+    if (last && last.b === it.b && last.i === it.i && last.m === it.m) last.s += s;
+    else runs.push({ s, b: it.b, i: it.i, m: it.m });
   }
   const x0 = Math.min(...its.map((i) => i.x0));
   const x1 = Math.max(...its.map((i) => i.x1));
   // Size/baseline from this fragment's own items (a line may also hold a bigger heading in the other column).
   const main = its.reduce((a, b) => (b.fs > a.fs ? b : a));
   const bodyItems = its.filter((i) => Math.abs(i.fs - main.fs) < 0.5);
+  // Code (monospace) keeps its internal spacing; normal text gets single spaces.
+  const mono = its.every((i) => i.m);
   return {
     x0, x1,
     y: main.y, top: main.top, bottom: main.bottom, fs: main.fs,
-    text: text.replace(/\s+/g, ' ').trim(),
-    runs: runs.map((r) => ({ ...r, s: r.s.replace(/\s+/g, ' ') })),
+    text: mono ? text.replace(/\s+$/, '') : text.replace(/\s+/g, ' ').trim(),
+    runs: runs.map((r) => ({ ...r, s: mono ? r.s : r.s.replace(/\s+/g, ' ') })),
     bold: bodyItems.every((i) => i.b),
     italic: bodyItems.every((i) => i.i),
+    mono,
+    font: main.font,
     rtl,
     chars: total,
+  };
+}
+
+/** Monospace text: place each piece at its character column (exact spacing for code). */
+function monoFragment(its) {
+  const sized = its.filter((i) => i.s.trim().length >= 2);
+  const cws = (sized.length ? sized : its).map((i) => (i.x1 - i.x0) / Math.max(1, i.s.trim().length)).sort((a, b) => a - b);
+  const cw = cws[cws.length >> 1] || its[0].fs * 0.6;
+  const x0 = Math.min(...its.map((i) => i.x0));
+  let text = '';
+  for (const it of its) {
+    // pdf.js sometimes prefixes a "fake" space that has no width; the position is what counts.
+    let str = it.s;
+    const trimmed = str.replace(/^\s+/, '');
+    if (trimmed !== str && Math.abs((it.x1 - it.x0) - trimmed.length * cw) < 0.5 * cw) str = trimmed;
+    const col = Math.round((it.x0 - x0) / cw);
+    if (col > text.length) text = text.padEnd(col);
+    text += str;
+  }
+  text = text.replace(/\s+$/, '');
+  const main = its.reduce((a, b) => (b.fs > a.fs ? b : a));
+  return {
+    x0, x1: Math.max(...its.map((i) => i.x1)),
+    y: main.y, top: main.top, bottom: main.bottom, fs: main.fs,
+    text, runs: [{ s: text, b: false, i: false, m: true }],
+    bold: false, italic: false, mono: true, font: main.font, rtl: false, chars: text.length,
   };
 }
 
@@ -279,7 +320,8 @@ export function walkOperators(pdfjs, opList, vp) {
         if (!diagonal && !filled) continue; // pure axis-aligned strokes are fully described by segments
       }
       if (w < 1 && h < 1) continue;
-      shapes.push({ ...box, curves: curves || diagonal, filled, members: 1 });
+      const poly = filled && !isRect && s.pts.length >= 3; // e.g. arrow heads
+      shapes.push({ ...box, curves: curves || diagonal || poly, filled, members: 1 });
     }
   }
 }
