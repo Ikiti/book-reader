@@ -19,7 +19,7 @@ import { findRegions } from './regions.js';
 import { buildBlocks, orderPage, PAGE_REF } from './layout.js';
 import { weightedMode } from './geometry.js';
 
-export const EXTRACT_VERSION = 2;
+export const EXTRACT_VERSION = 3; // 3: OCR for picture-only pages
 
 const PAGE_NUM = /^(page\s*)?#(\s*(of|\/)\s*#)?$|^[-–—]\s*#\s*[-–—]$|^[ivxlcdm]+$/i;
 const textOf = (b) => (b.runs ? b.runs.map((r) => r.s).join('') : '');
@@ -29,9 +29,10 @@ const textOf = (b) => (b.runs ? b.runs.map((r) => r.s).join('') : '');
  * @param {object} pdf    PDFDocumentProxy
  * @param {object} opts
  *   cropper(pageNumber, rects) -> Promise<(Blob|Uint8Array)[]>   renders a page and crops rects
- *   onProgress(done, total, phase)
+ *   ocr      {page(pageNumber, w, h) -> page description}  for pages that are only a picture (optional)
+ *   onProgress(done, total, phase)   phase: 'analyze' | 'ocr' | 'images'
  */
-export async function extractBook(pdfjs, pdf, { cropper, onProgress } = {}) {
+export async function extractBook(pdfjs, pdf, { cropper, ocr, onProgress } = {}) {
   const n = pdf.numPages;
   const raw = [];
   for (let p = 1; p <= n; p++) {
@@ -46,15 +47,31 @@ export async function extractBook(pdfjs, pdf, { cropper, onProgress } = {}) {
       pa = { w: vp.width, h: vp.height, frags: [], regions: [{ kind: 'scan', x0: 0, y0: 0, x1: vp.width, y1: vp.height }], scanned: true };
     }
     page.cleanup();
+    // A page that is only a picture: read it with OCR, then lay it out like any other page.
+    if (pa.scanned && ocr) {
+      onProgress?.(p, n, 'ocr');
+      try {
+        const o = await ocr.page(p, pa.w, pa.h);
+        if (o.poster) pa.poster = true; // cover / designed page: stays a picture
+        else if (o.frags.length) { pa = o; Object.assign(pa, findRegions(pa)); }
+      } catch (err) {
+        console.warn('OCR failed on page', p, err);
+      }
+    }
     raw.push(pa);
     onProgress?.(p, n, 'analyze');
   }
+  await ocr?.close?.();
 
-  let bodySize = weightedMode(raw.flatMap((pa) => pa.frags.map((f) => [f.fs, f.chars])), 0.5) || 11;
+  // Body text size: the most common size of running text (code listings don't count — a code-heavy
+  // book would otherwise make every normal paragraph look like a heading).
+  const sizeOf = () => weightedMode(raw.flatMap((pa) => pa.frags.filter((f) => !f.mono).map((f) => [f.fs, f.chars])), 0.5)
+    || weightedMode(raw.flatMap((pa) => pa.frags.map((f) => [f.fs, f.chars])), 0.5);
+  let bodySize = sizeOf() || 11;
   let pdfLabels = null;
   try { pdfLabels = await pdf.getPageLabels(); } catch { /* none */ }
   removeRunningHeaders(raw, bodySize, pdfLabels);
-  bodySize = weightedMode(raw.flatMap((pa) => pa.frags.map((f) => [f.fs, f.chars])), 0.5) || bodySize;
+  bodySize = sizeOf() || bodySize;
   const labels = await pageLabels(pdf, raw);
   const outline = await readOutline(pdf, raw);
   const ordered = raw.map((pa) => orderPage(pa, pa.frags, pa.regions));
@@ -98,7 +115,8 @@ export async function extractBook(pdfjs, pdf, { cropper, onProgress } = {}) {
   const toc = buildToc(blocks, outline);
   linkContentsLines(blocks, labels);
   // Front/back covers are pictures by nature; don't count them as pages needing OCR.
-  const scannedPages = raw.filter((pa, i) => pa.scanned && !(n > 4 && (i === 0 || i === n - 1))).length;
+  const scannedPages = raw.filter((pa, i) => pa.scanned && !pa.poster && !(n > 4 && (i === 0 || i === n - 1))).length;
+  const ocrPages = raw.filter((pa) => pa.ocr).length;
   return {
     model: {
       v: EXTRACT_VERSION,
@@ -108,6 +126,7 @@ export async function extractBook(pdfjs, pdf, { cropper, onProgress } = {}) {
       bodySize,
       needsOcr: scannedPages > 0,
       scannedPages,
+      ocrPages,
       blocks,
       toc,
     },

@@ -194,3 +194,5 @@ label.row select { flex: 1; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media print { .bar, .selbar, .zoom { display: none !important; } .flow { padding-top: 0; } }
+.settings .field { display: flex; flex-direction: column; gap: .35rem; margin: .4rem 0 .8rem; }
+.settings .field > span { font-weight: 600; }

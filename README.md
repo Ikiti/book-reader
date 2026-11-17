@@ -50,7 +50,6 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
    - Drag and drop on the desktop.
 
 ### P2: next
-- **OCR for scanned PDFs**, built in (see [OCR](#ocr-scanned-pdfs)). Until then, scanned pages go into the EPUB as page pictures, with a warning.
 - Footnotes → EPUB pop-up notes.
 - Equations kept as images.
 - Tables without any lines, detected from text alignment.
@@ -103,29 +102,25 @@ On a phone, open the EPUB with ReadEra, Moon+ Reader, Lithium or Google Play Boo
 
 ## OCR (scanned PDFs)
 
-A scanned PDF is only photos of pages, so there is no text to reflow. The converter detects this and keeps those pages as pictures. To get real text, add a text layer with **Tesseract**: a free, local OCR engine that supports Hebrew (`heb`) and English. It uses no AI tokens and no network.
+Some PDFs are only pictures of pages (scans, or pages exported as images), so there is no text to reflow. The app and the command line now **read those pages with OCR on your device** and turn them into real text: headings, paragraphs, bullet lists, code listings, note boxes and tables. Covers and designed pages stay pictures.
 
-**Recommended now: OCRmyPDF on Windows, before converting.** It is the most accurate option, it can straighten and rotate pages, and you can run it in batches.
+- **Engine:** Tesseract 5 (tesseract.js 7, WebAssembly), vendored in `vendor/tesseract` with English and Hebrew "best" models. No AI tokens, no cloud; your books never leave the device.
+- **Language:** *Automatic* reads the first page with real text and picks English, Hebrew or both. You can force it: Library → ⚙ → *Scanned / picture-only PDF pages*, or `--ocr eng|heb|eng+heb|off` on the command line.
+- **First use:** about 7 MB (engine + language data) downloads once; the service worker keeps it for offline use.
+- **Speed:** about 2–3 s per page on a PC, more on a phone. A converted book is saved, so it's a one-time cost.
+- **Accuracy:** good on clean scans and exported pages. OCR can still misread single letters (`l`/`I`, `0`/`O`), especially in code. The import message says how many pages were read with OCR.
 
 ```powershell
-winget install -e --id Python.Python.3.12
-winget install -e --id UB-Mannheim.TesseractOCR      # choose Hebrew under "Additional language data"
-winget install -e --id ArtifexSoftware.GhostScript
-pip install ocrmypdf
-ocrmypdf -l heb+eng --deskew --rotate-pages scanned.pdf scanned-ocr.pdf
-node tools\pdf2epub.mjs scanned-ocr.pdf
+node tools\pdf2epub.mjs scanned.pdf                 # OCR happens automatically when needed
+node tools\pdf2epub.mjs scanned.pdf --ocr heb       # force Hebrew
 ```
-You can also use WSL (`sudo apt install ocrmypdf tesseract-ocr-heb`, then call it with `wsl ocrmypdf …`).
-The converter already handles OCR'd PDFs: it uses the hidden text layer and drops the page photo.
 
-**Planned in the app (P2): Tesseract.js**, the same engine compiled to WebAssembly.
-- It loads only when a book has pages without text.
-- Language data is a few MB per language, downloaded once and then cached for offline use.
-- It takes several seconds per page on a phone, so batch OCR on the PC is still better for whole books.
+For badly skewed or rotated scans, **OCRmyPDF** on the PC is still the strongest option (it straightens and rotates pages first). The converter uses the text layer it adds:
 
-**Options I don't recommend:**
-- Android's ML Kit text recognition doesn't read Hebrew script.
-- Sending pages to a cloud or LLM vision API costs tokens, needs the network, and sends your books off the device.
+```powershell
+pip install ocrmypdf     # needs Tesseract and Ghostscript (winget: UB-Mannheim.TesseractOCR, ArtifexSoftware.GhostScript)
+ocrmypdf -l heb+eng --deskew --rotate-pages scanned.pdf scanned-ocr.pdf
+```
 
 ---
 
@@ -135,6 +130,7 @@ The converter already handles OCR'd PDFs: it uses the hidden text layer and drop
   - Deploying means copying files, and every file can be read on its own.
   - It runs the same on Android and Windows, and wraps easily into store packages later (PWABuilder or Capacitor).
 - **pdf.js 6.2** (Mozilla) is vendored in `vendor/pdfjs`, including its fonts, CJK maps and the JPEG 2000 and JBIG2 decoders used in scanned books, so nothing is loaded from a CDN.
+- **Tesseract 5 (tesseract.js 7)** is vendored in `vendor/tesseract` for OCR of picture-only pages: LSTM-only WebAssembly builds and the English/Hebrew models. It loads only when a book needs it.
 - **IndexedDB** stores books and notes. A **service worker** provides offline use, installation and the Android share target.
 - The **EPUB writer and ZIP writer** are our own code and need no other libraries (zip uses the built-in `CompressionStream`). The same code runs in the browser and in Node.
 
@@ -151,22 +147,26 @@ js/pdf/extract.js   whole book: headers/footers, body size, image crops, TOC
 js/epub/epub.js     book model → EPUB 3 (OPF, nav, NCX, page list, chapters)
 js/epub/import.js   EPUB 2/3 → book model (reading EPUBs)    js/epub/load.js  browser glue
 js/epub/zip.js, unzip.js   ZIP writer/reader       js/epub/export.js   app "Export EPUB"
+js/ocr/raster.js    page picture analysis: shaded boxes, table lines, pictures, stroke weight
+js/ocr/page.js      OCR words → the same fragments as a text PDF (code, bullets, bold, tables)
+js/ocr/provider.js  Tesseract worker, language choice, second pass for missed lines
 js/notes/*          notes and where they're sent (Keep, Obsidian, Markdown)
-tools/pdf2epub.mjs  command-line converter    tools/vendor-pdfjs.mjs  update pdf.js
+tools/pdf2epub.mjs  command-line converter    tools/node-ocr.mjs  OCR in Node
+tools/vendor.mjs    copies pdf.js and Tesseract into vendor/ (npm run vendor)
 tests/*             extraction, EPUB and end-to-end browser tests
-samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew)
+samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew, tech book, scanned copy)
 ```
 
 ### Extending
 - **Another notes destination** (Notion, OneNote, email, your API): add an entry to `PROVIDERS` in `js/notes/providers.js`. It appears in Settings automatically.
 - **Another input format** (DOCX, HTML, Markdown): produce the same *book model* (`{blocks, toc, pages}`, documented at the top of `js/pdf/extract.js`). The reader and the EPUB export then work unchanged.
 - **Tuning the conversion:** all the heuristics are named constants in `analyze.js`, `regions.js` and `layout.js`. Add the problem PDF to `samples/` and an assertion to `tests/extract.test.mjs`.
-- **Updating pdf.js:** change the version in `package.json`, then run `npm install && npm run vendor`, and bump `VERSION` in `sw.js`.
+- **Updating pdf.js or Tesseract:** change the version in `package.json`, then run `npm install && npm run vendor`, and bump `VERSION` in `sw.js`.
 
 ### Tests
 ```bash
 npm install
-npm test                                   # PDF extraction, EPUB export, EPUB import (Node)
+npm test                                   # PDF extraction, OCR, EPUB export, EPUB import (Node)
 EPUBCHECK=path/to/epubcheck.jar npm test   # + official EPUB validator
 python -m http.server 8080 &  python tests/e2e.py --shots shots/   # full browser test (Playwright)
 ```

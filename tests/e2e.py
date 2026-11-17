@@ -298,6 +298,39 @@ with sync_playwright() as p:
     check('EPUB contents panel', ep.locator('.toc-item').count() >= 4)
     ec.close()
 
+    # ---- Scanned PDF (pages are only pictures): OCR in the browser ----
+    oc = browser.new_context(**phone)
+    op = oc.new_page()
+    op.on('pageerror', lambda e: errors.append(str(e)))
+    op.goto(args.url)
+    op.wait_for_selector('.lib-bar')
+    op.locator('#lib-settings').click()
+    check('import settings offer OCR languages', op.locator('#ocr-lang option').count() == 5)
+    op.keyboard.press('Escape')
+    labels = []
+    t0 = time.time()
+    op.set_input_files('#pick-import', os.path.join(ROOT, 'samples', 'scanned-sample.pdf'))
+    while time.time() - t0 < 180 and op.locator('.card').count() == 0:
+        lab = op.locator('.progress-sheet .muted')
+        if lab.count():
+            try:
+                labels.append(lab.inner_text(timeout=200))
+            except Exception:
+                pass
+        op.wait_for_timeout(300)
+    op.wait_for_selector('.card', timeout=5000)
+    print(f'  (browser OCR of 4 pages: {time.time() - t0:.1f} s)')
+    check('OCR progress shown while importing', any('OCR' in l for l in labels))
+    check('scanned book has no "scan" badge after OCR', op.locator('.card .badge:not(.fmt)').count() == 0)
+    op.locator('.card .cover').click()
+    op.wait_for_selector('.flow [data-b]')
+    heads = op.locator('.flow h1, .flow h2, .flow h3').all_text_contents()
+    check(f'OCR chapter headings ({heads})', sum(1 for h in heads if h.strip().startswith('Chapter')) == 4)
+    check('OCR table rebuilt', op.locator('.flow table tr').count() >= 5 and 'Needs OCR' in op.locator('.flow table').text_content())
+    check('OCR list items', op.locator('.flow li, .flow p.li').count() >= 3)
+    shot(op, '23-ocr-reader')
+    oc.close()
+
     browser.close()
 
 real_errors = [e for e in errors if 'favicon' not in e]

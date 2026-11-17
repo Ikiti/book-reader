@@ -219,6 +219,7 @@ function monoFragment(its) {
     if (trimmed !== str && Math.abs((it.x1 - it.x0) - trimmed.length * cw) < 0.5 * cw) str = trimmed;
     const col = Math.round((it.x0 - x0) / cw);
     if (col > text.length) text = text.padEnd(col);
+    else if (it.word && text && !/\s$/.test(text)) text += ' '; // OCR words are always separate words
     text += str;
   }
   text = text.replace(/\s+$/, '');

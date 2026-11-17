@@ -1,6 +1,6 @@
 // Service worker: offline app shell + Android share target.
 // Bump VERSION when you deploy changes so clients pick up the new files.
-const VERSION = 'br-v4';
+const VERSION = 'br-v5';
 const SHELL = [
   './',
   './index.html',
@@ -27,6 +27,11 @@ const SHELL = [
   './js/epub/unzip.js',
   './js/epub/import.js',
   './js/epub/load.js',
+  './js/ocr/provider.js',
+  './js/ocr/raster.js',
+  './js/ocr/page.js',
+  './vendor/tesseract/tesseract.esm.min.js',
+  './vendor/tesseract/worker.min.js',
   './vendor/pdfjs/pdf.min.mjs',
   './vendor/pdfjs/pdf.worker.min.mjs',
   './icons/icon-192.png',
@@ -79,9 +84,12 @@ self.addEventListener('fetch', (e) => {
 
   if (e.request.method !== 'GET') return;
   // Cache first, then network (and refresh the cache in the background).
+  // Vendored libraries never change under the same name: no refresh (the OCR engine is ~4 MB).
+  const immutable = url.pathname.includes('/vendor/');
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
     const cached = await cache.match(e.request, { ignoreSearch: true });
+    if (cached && immutable) return cached;
     const network = fetch(e.request).then((res) => {
       if (res.ok && res.type === 'basic') cache.put(e.request, res.clone());
       return res;

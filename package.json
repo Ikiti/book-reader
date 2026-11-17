@@ -7,12 +7,15 @@
   "scripts": {
     "pdf2epub": "node tools/pdf2epub.mjs",
     "serve": "npx --yes serve -l 8080 .",
-    "test": "node tests/extract.test.mjs && node tests/epub.test.mjs && node tests/epub-import.test.mjs",
+    "test": "node tests/extract.test.mjs && node tests/epub.test.mjs && node tests/epub-import.test.mjs && node tests/ocr.test.mjs",
     "test:e2e": "python3 tests/e2e.py",
-    "vendor": "node tools/vendor-pdfjs.mjs"
+    "vendor": "node tools/vendor.mjs"
   },
   "dependencies": {
-    "pdfjs-dist": "6.2.108"
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/heb": "^1.0.0",
+    "pdfjs-dist": "6.2.108",
+    "tesseract.js": "^7.0.0"
   },
   "optionalDependencies": {
     "@napi-rs/canvas": "^1.0.0"

@@ -253,7 +253,9 @@ export function buildBlocks(orderedPages, pagesInfo, bodySize) {
   flush();
   indexLevels(blocks);
   const out = blocks.map((b) => (b.lines && b.lvl != null ? finishIndexLine(b) : b));
-  return markHeadings(out, bodySize);
+  // OCR size estimates wobble by ~10%, so same-level headings need a looser match there.
+  const ocrShare = pagesInfo.filter((pa) => pa?.ocr).length / Math.max(1, pagesInfo.length);
+  return markHeadings(out, bodySize, ocrShare > 0.5 ? 0.14 : 0);
 }
 
 /** Contents page: one block per entry, page number kept separately (for linking). */
@@ -413,8 +415,20 @@ export function joinRuns(lines) {
   }).filter((r) => r.s);
 }
 
+const INLINE_LABEL = /^(NOTE|NOTES|WARNING|TIP|CAUTION|IMPORTANT|DANGER)\s*:\s+/;
+
 function finishPara(p) {
   const runs = joinRuns(p.lines);
+  // "NOTE: …" written inline is a note box too (common in slides, cheat sheets, scans).
+  const m = !p.note && runs.length && runs.map((r) => r.s).join('').match(INLINE_LABEL);
+  if (m) {
+    p.note = m[1] === 'NOTES' ? 'NOTE' : m[1];
+    let cut = m[0].length; // the label may be its own (bold) run
+    while (cut > 0 && runs.length) {
+      if (runs[0].s.length <= cut) { cut -= runs[0].s.length; runs.shift(); }
+      else { runs[0] = { ...runs[0], s: runs[0].s.slice(cut) }; cut = 0; }
+    }
+  }
   const text = runs.map((r) => r.s).join('');
   const blk = {
     t: 'p', pg: p.pg, y: Math.round(p.y), fs: Math.round(p.fs * 10) / 10,
@@ -436,13 +450,18 @@ function regionBlock(r, pg) {
   return { t: 'img', pg, y: Math.round(r.y0), rect };
 }
 
-function markHeadings(blocks, body) {
+function markHeadings(blocks, body, tol = 0) {
   const paras = blocks.filter((b) => b.t === 'p');
   const big = paras.filter((b) => b.fs >= body * 1.18 && b._text.length <= 200 && b._lines <= 3 && !b.note);
-  const sizes = [...new Set(big.map((b) => Math.round(b.fs)))].sort((a, b) => b - a);
+  // Size tiers, largest first; a size within `tol` of a tier's top joins that tier.
+  const sizes = [];
+  for (const fs of [...new Set(big.map((b) => Math.round(b.fs)))].sort((a, b) => b - a)) {
+    if (!sizes.length || fs < sizes[sizes.length - 1] * (1 - tol) - 0.01) sizes.push(fs);
+  }
+  const tier = (fs) => { const r = Math.round(fs); const i = sizes.findIndex((t) => r >= t * (1 - tol) - 0.01); return i < 0 ? sizes.length - 1 : i; };
   for (const b of big) {
     b.t = 'h';
-    b.l = Math.min(3, sizes.indexOf(Math.round(b.fs)) + 1);
+    b.l = Math.min(3, tier(b.fs) + 1);
   }
   for (const b of paras) {
     if (b.t === 'p' && b._bold && !b.li && !b.note && b._lines <= 2 && b._text.length <= 90 && !/[.,;]$/.test(b._text) && b.fs >= body * 0.95) {
@@ -454,9 +473,12 @@ function markHeadings(blocks, body) {
   for (let i = blocks.length - 2; i >= 0; i--) {
     const a = blocks[i];
     const b = blocks[i + 1];
-    if (a.t === 'h' && b.t === 'h' && a.pg === b.pg && /^(\d{1,3}|[IVXLC]{1,6}|[A-Z])$/.test(a._text.trim())) {
-      b.runs = [{ s: `${a._text.trim()} ` }, ...b.runs];
-      b.l = Math.min(a.l, b.l);
+    const label = a._text?.trim() || '';
+    const numberOnly = /^(\d{1,3}|[IVXLC]{1,6}|[A-Z])$/.test(label);
+    const chapterWord = /^(chapter|part|section|appendix|פרק|חלק)\s*([\dIVXLC]{1,4}|[A-Z])$/i.test(label);
+    if ((a.t === 'h' || (a.t === 'p' && chapterWord)) && b.t === 'h' && a.pg === b.pg && (numberOnly || chapterWord)) {
+      b.runs = [{ s: chapterWord ? `${label.replace(/^(\D+?)\s*(\d+|[IVXLC]+|[A-Z])$/i, '$1 $2')}: ` : `${label} ` }, ...b.runs];
+      if (a.t === 'h') b.l = Math.min(a.l, b.l);
       b.y = a.y;
       blocks.splice(i, 1);
     }

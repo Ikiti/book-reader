@@ -2,7 +2,7 @@
 import { get, persist, replaceContent, saveBook } from './db.js';
 import { renderLibrary } from './library.js';
 import { openReader } from './reader.js';
-import { loadSettings } from './settings.js';
+import { loadSettings, settings } from './settings.js';
 import { cleanTitle } from './pdf/title.js';
 import { $, h, toast } from './ui.js';
 
@@ -41,10 +41,12 @@ function progressUi(name) {
   document.body.append(el);
   return {
     update(done, total, phase) {
-      const pct = phase === 'images' ? 85 + (done / total) * 15 : phase === 'chapters' ? (done / total) * 100 : (done / total) * 85;
+      const pct = phase === 'images' ? 85 + (done / total) * 15 : phase === 'chapters' ? (done / total) * 100
+        : phase === 'ocr' ? ((done - 0.5) / total) * 85 : (done / total) * 85;
       bar.style.width = `${pct.toFixed(1)}%`;
       label.textContent = phase === 'analyze' ? `Reading page ${done} of ${total}`
-        : phase === 'chapters' ? `Reading part ${done} of ${total}` : `Saving pictures and tables (${done}/${total})`;
+        : phase === 'ocr' ? `Page ${done} of ${total} is a picture: recognizing its text (OCR)…`
+          : phase === 'chapters' ? `Reading part ${done} of ${total}` : `Saving pictures and tables (${done}/${total})`;
     },
     close() { el.remove(); },
   };
@@ -77,7 +79,7 @@ async function importFiles(files, { open = false, epub = false } = {}) {
     const ui = progressUi(file.name);
     try {
       const process = await FORMATS[format].load();
-      const res = await process(buf.slice(0), ui.update);
+      const res = await process(buf.slice(0), ui.update, { ocr: settings().ocrLang });
       const book = {
         id,
         format,
@@ -96,7 +98,11 @@ async function importFiles(files, { open = false, epub = false } = {}) {
       lastId = id;
       ids.push(id);
       if (format === 'pdf') toConvert.push(id);
-      toast(`Added “${book.title}”${book.needsOcr ? ' — some pages are scans (no text)' : ''}`, 4000);
+      const extra = [
+        res.model.ocrPages ? `${res.model.ocrPages} page${res.model.ocrPages === 1 ? '' : 's'} read with OCR` : '',
+        book.needsOcr ? 'some pages kept as pictures (no text)' : '',
+      ].filter(Boolean).join('; ');
+      toast(`Added “${book.title}”${extra ? ` — ${extra}` : ''}`, 5000);
     } catch (err) {
       console.error(err);
       toast(`Could not import ${file.name}: ${err.message || err}`, 6000);
@@ -124,7 +130,7 @@ async function reprocess(id) {
   const ui = progressUi(book.title);
   try {
     const process = await FORMATS[book.format || 'pdf'].load();
-    const res = await process(await file.blob.arrayBuffer(), ui.update);
+    const res = await process(await file.blob.arrayBuffer(), ui.update, { ocr: settings().ocrLang });
     await replaceContent(id, res.model, res.images, { v: res.model.v, needsOcr: res.model.needsOcr, progress: null });
     toast('Book re-processed');
   } catch (err) {

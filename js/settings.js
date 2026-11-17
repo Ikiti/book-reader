@@ -22,6 +22,7 @@ export const DEFAULTS = {
   noteProvider: 'auto',
   obsidianVault: '',
   obsidianFolder: 'Book Notes',
+  ocrLang: 'auto', // picture-only PDF pages: 'auto' | 'eng' | 'heb' | 'eng+heb' | 'off'
 };
 
 let current = { ...DEFAULTS };

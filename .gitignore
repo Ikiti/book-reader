@@ -1,3 +1,4 @@
 node_modules/
 *.epub
 .DS_Store
+.scratch/

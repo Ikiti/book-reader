@@ -14,7 +14,8 @@ export function findRegions(pa) {
   const regions = [];
   const textChars = pa.frags.reduce((s, f) => s + f.chars, 0);
 
-  // 1. Tables from ruled lines.
+  // 1. Tables from ruled lines (and tables already found in a page picture by OCR).
+  for (const t of pa.tables || []) regions.push({ kind: 'table', x0: t.x0, y0: t.y0, x1: t.x1, y1: t.y1, table: t.rows, claims: t.claims });
   const used = new Set();
   for (const comp of groupRules(lineComponents(pa.segments))) {
     const t = buildTable(comp, pa.frags, pa.shapes);
@@ -40,7 +41,8 @@ export function findRegions(pa) {
   }
 
   // 3. Vector figures: clusters of drawings that are not table rules and not mostly text.
-  const loose = [
+  //    (OCR pages have no drawings: their pictures come from the pixel analysis.)
+  const loose = pa.ocr ? [] : [
     ...pa.shapes.filter((s) => area(s) < 0.6 * pageArea),
     ...pa.segments.filter((s) => !used.has(s)).map(segBox),
   ].filter((s) => !regions.some((r) => overlaps(r, s, 1)));
@@ -169,6 +171,9 @@ function buildTable(segs, frags, shapes = []) {
     // Guard against page-wide header/footer rules: rule tables are short and hold short cells.
     const avgLen = inside.reduce((n, f) => n + f.text.length, 0) / inside.length;
     if (box.y1 - box.y0 > 400 || avgLen > 40) return null;
+    // Table text is one size; a heading between two rules is not a table.
+    const sizes = inside.map((f) => f.fs);
+    if (Math.max(...sizes) > 1.4 * Math.min(...sizes)) return null;
     table = rulesTable(box, inside, clusterValues(hs.map((h) => h.y), TOL));
   }
   if (!table) return null;

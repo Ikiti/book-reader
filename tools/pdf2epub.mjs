@@ -4,7 +4,8 @@
 //   npm install
 //   node tools/pdf2epub.mjs book.pdf                 -> book.epub next to it
 //   node tools/pdf2epub.mjs "C:\Books" -o "C:\EPUB"  -> converts every PDF in the folder
-//   options: -o <dir>  output folder   --lang <code>  force language (e.g. he, en)   --no-cover
+//   options: -o <dir>  output folder   --lang <code>  force book language (e.g. he, en)   --no-cover
+//            --ocr auto|eng|heb|eng+heb|off   text recognition for pages that are only pictures (default auto)
 //
 // Runs fully offline; no tokens, no cloud.
 import fs from 'node:fs/promises';
@@ -13,6 +14,7 @@ import { createRequire } from 'node:module';
 import { extractBook } from '../js/pdf/extract.js';
 import { buildEpub } from '../js/epub/epub.js';
 import { cleanTitle, safeFileName } from '../js/pdf/title.js';
+import { nodeOcr } from './node-ocr.mjs';
 
 const require = createRequire(import.meta.url);
 const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -27,12 +29,13 @@ const PDFJS_DIR = path.dirname(require.resolve('pdfjs-dist/package.json'));
 const dirUrl = (d) => path.join(PDFJS_DIR, d) + path.sep;
 
 function parseArgs(argv) {
-  const o = { inputs: [], out: null, lang: null, cover: true };
+  const o = { inputs: [], out: null, lang: null, cover: true, ocr: 'auto' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-o' || a === '--out') o.out = argv[++i];
     else if (a === '--lang') o.lang = argv[++i];
     else if (a === '--no-cover') o.cover = false;
+    else if (a === '--ocr') o.ocr = argv[++i];
     else if (a === '-h' || a === '--help') o.help = true;
     else o.inputs.push(a);
   }
@@ -81,20 +84,22 @@ async function convert(file, opts) {
         if (w < 2 || h < 2) { out.push(null); continue; }
         const c = createCanvas(w, h);
         const cx = c.getContext('2d');
-      cx.drawImage(canvas, x, y, w, h, 0, 0, w, h);
-      cx.fillStyle = '#fff';
-      for (const m of r.masks || []) cx.fillRect(m.x0 * scale - x, m.y0 * scale - y, (m.x1 - m.x0) * scale, (m.y1 - m.y0) * scale);
+        cx.drawImage(canvas, x, y, w, h, 0, 0, w, h);
+        cx.fillStyle = '#fff';
+        for (const m of r.masks || []) cx.fillRect(m.x0 * scale - x, m.y0 * scale - y, (m.x1 - m.x0) * scale, (m.y1 - m.y0) * scale);
         out.push(await jpeg(c));
       }
       page.cleanup();
       return out;
     };
     let lastPct = -1;
+    const ocr = opts.ocr !== 'off' ? nodeOcr(pdf, opts.ocr, render) : null;
     const { model, images } = await extractBook(pdfjs, pdf, {
       cropper,
+      ocr,
       onProgress: (done, total, phase) => {
-        const pct = Math.floor((phase === 'analyze' ? done / total * 85 : 85 + done / total * 15));
-        if (pct !== lastPct && process.stdout.isTTY) { process.stdout.write(`\r  ${pct}% `); lastPct = pct; }
+        const pct = Math.floor((phase === 'images' ? 85 + done / total * 15 : done / total * 85));
+        if (process.stdout.isTTY && (pct !== lastPct || phase === 'ocr')) { process.stdout.write(`\r  ${pct}% ${phase === 'ocr' ? `(reading text from picture of page ${done})` : ''}          `); lastPct = pct; }
       },
     });
     const meta = await pdf.getMetadata().catch(() => null);
@@ -116,7 +121,8 @@ async function convert(file, opts) {
     await fs.writeFile(outFile, epub);
     if (process.stdout.isTTY) process.stdout.write('\r');
     const notes = [];
-    if (model.scannedPages) notes.push(`${model.scannedPages} scanned page(s) kept as pictures — see README › OCR`);
+    if (model.ocrPages) notes.push(`${model.ocrPages} page(s) read with OCR (check the text)`);
+    if (model.scannedPages) notes.push(`${model.scannedPages} picture-only page(s) kept as pictures`);
     console.log(`✔ ${path.basename(file)} → ${outFile}  (${model.pageCount} pages, ${model.toc.length} TOC entries, ${model.blocks.filter((b) => b.t === 'img' || b.t === 'scan').length} pictures, ${model.blocks.filter((b) => b.t === 'table').length} tables, ${(epub.length / 1024).toFixed(0)} KB, ${((Date.now() - t0) / 1000).toFixed(1)} s)${notes.length ? '\n  ⚠ ' + notes.join('; ') : ''}`);
     return outFile;
   } finally {
@@ -138,7 +144,7 @@ async function collect(inputs) {
 
 const opts = parseArgs(process.argv.slice(2));
 if (opts.help || !opts.inputs.length) {
-  console.log('Usage: node tools/pdf2epub.mjs <file.pdf | folder> [...] [-o outDir] [--lang he] [--no-cover]');
+  console.log('Usage: node tools/pdf2epub.mjs <file.pdf | folder> [...] [-o outDir] [--lang he] [--no-cover] [--ocr auto|eng|heb|eng+heb|off]');
   process.exit(opts.help ? 0 : 1);
 }
 let failed = 0;

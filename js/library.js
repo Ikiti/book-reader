@@ -1,6 +1,7 @@
 // Library view: the list of books with cover, progress and last-read position.
 import { all, deleteBook, get, put } from './db.js';
 import { bookNotesMarkdown, listNotes } from './notes/notes.js';
+import { settings, updateSettings } from './settings.js';
 import { $, download, fmtDate, h, sheet, toast } from './ui.js';
 
 let urls = [];
@@ -28,6 +29,7 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
       h('div.spacer'),
       h('button.primary#convert', { onclick: () => convertInput.click(), title: 'Convert PDF files to EPUB' }, 'PDF → EPUB'),
       h('button#import', { onclick: () => input.click(), title: 'Add a PDF or EPUB to the library (or drop files here)', 'aria-label': 'Add book' }, '＋ Add'),
+      h('button.icon#lib-settings', { onclick: libSettings, title: 'Import settings', 'aria-label': 'Import settings' }, '⚙'),
       input, convertInput),
     h('main.library', books.length ? grid : empty, h('p.muted.storage#storage')),
   );
@@ -85,6 +87,25 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
       } }, 'Delete'),
     ));
   }
+}
+
+const OCR_CHOICES = {
+  auto: 'Automatic (English and/or Hebrew)',
+  eng: 'English',
+  heb: 'Hebrew',
+  'eng+heb': 'English + Hebrew (mixed pages)',
+  off: 'Off: keep picture pages as pictures',
+};
+
+function libSettings() {
+  const st = settings();
+  sheet('Import settings', h('div.settings',
+    h('label.field', h('span', 'Scanned / picture-only PDF pages (OCR)'),
+      h('select#ocr-lang', { onchange: (e) => updateSettings({ ocrLang: e.target.value }) },
+        Object.entries(OCR_CHOICES).map(([v, label]) => h('option', { value: v, selected: st.ocrLang === v }, label)))),
+    h('p.muted', 'Pages that are only a picture of text are read on this device (Tesseract OCR) and turned into real text, headings, code and tables. '
+      + 'The first time, about 7 MB of recognition data is downloaded once and kept for offline use. Allow ~3–6 s per page; check the result, OCR can misread letters.'),
+    h('p.muted', 'Applies to new imports. For a book already in the library: ⋮ → Re-process.')));
 }
 
 async function storageInfo() {
