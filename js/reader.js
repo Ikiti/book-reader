@@ -37,6 +37,7 @@ class Reader {
 
   /** Printed page number (book's own numbering) for a page index. */
   label(pg) {
+    if (this.model.pageless) return '';
     const l = this.model.labels?.[pg];
     return l && !String(l).startsWith('#') ? String(l) : String(pg + 1);
   }
@@ -56,7 +57,9 @@ class Reader {
       h('button', { onmousedown: (e) => e.preventDefault(), onclick: () => this.noteFromSelection() }, '📝 Note'),
       h('button', { onmousedown: (e) => e.preventDefault(), onclick: () => this.copySelection() }, 'Copy'),
       h('button', { onmousedown: (e) => e.preventDefault(), onclick: () => this.quickSend() }, 'Send'));
-    this.modeBtn = h('button.icon', { title: 'Original pages / Reflow (O)', 'aria-label': 'Toggle original pages', onclick: () => this.toggleMode() }, '⧉');
+    this.isEpub = this.model.kind === 'epub';
+    // EPUB books have no fixed pages to show; the "original pages" view is for PDFs.
+    this.modeBtn = this.isEpub ? null : h('button.icon', { title: 'Original pages / Reflow (O)', 'aria-label': 'Toggle original pages', onclick: () => this.toggleMode() }, '⧉');
 
     this.root.replaceChildren(
       h('header.bar.top',
@@ -65,7 +68,7 @@ class Reader {
         h('button.icon', { onclick: () => this.showToc(), title: 'Contents (T)', 'aria-label': 'Contents' }, '☰'),
         h('button.icon', { onclick: () => this.showNotes(), title: 'Notes (N)', 'aria-label': 'Notes' }, '🗒'),
         h('button.icon', { onclick: () => this.showSettings(), title: 'Text settings (A)', 'aria-label': 'Text settings' }, 'Aa'),
-        h('button.icon', { onclick: async () => (await import('./epub/export.js')).exportEpub(book.id), title: 'Export EPUB (E)', 'aria-label': 'Export EPUB' }, '⤓'),
+        this.isEpub ? null : h('button.icon', { onclick: async () => (await import('./epub/export.js')).exportEpub(book.id), title: 'Export EPUB (E)', 'aria-label': 'Export EPUB' }, '⤓'),
         this.modeBtn),
       this.flow,
       this.pagesEl,
@@ -73,7 +76,7 @@ class Reader {
       this.selbar,
     );
     this.renderFlow();
-    if ((this.model.v || 1) < EXTRACT_VERSION) toast('This book was converted by an older version. Library → ⋮ → Re-process for better results.', 6000);
+    if (!this.isEpub && (this.model.v || 1) < EXTRACT_VERSION) toast('This book was converted by an older version. Library → ⋮ → Re-process for better results.', 6000);
     this.notes = await listNotes(book.id);
     this.paintHighlights();
     this.restore();
@@ -212,7 +215,7 @@ class Reader {
     const p = this.pos;
     if (!p) return;
     this.chapterEl.textContent = p.chapter || '';
-    this.status.textContent = `Page ${p.page} · ${Math.round(p.pct * 100)}%`;
+    this.status.textContent = p.page ? `Page ${p.page} · ${Math.round(p.pct * 100)}%` : `${Math.round(p.pct * 100)}%`;
   }
 
   save(now = false) {
@@ -510,8 +513,8 @@ class Reader {
     else if (k === 't' || k === 'T') this.showToc();
     else if (k === 'n' || k === 'N') this.showNotes();
     else if (k === 'a' || k === 'A') this.showSettings();
-    else if (k === 'o' || k === 'O') this.toggleMode();
-    else if (k === 'e' || k === 'E') import('./epub/export.js').then((m) => m.exportEpub(this.book.id));
+    else if ((k === 'o' || k === 'O') && !this.isEpub) this.toggleMode();
+    else if ((k === 'e' || k === 'E') && !this.isEpub) import('./epub/export.js').then((m) => m.exportEpub(this.book.id));
     else if (k === '+' || k === '=') updateSettings({ size: Math.min(36, settings().size + 1) });
     else if (k === '-') updateSettings({ size: Math.max(12, settings().size - 1) });
     else if (k === 'ArrowRight' || k === 'ArrowLeft') {
@@ -527,14 +530,15 @@ function renderBlock(b, i, reader) {
     case 'h': return h(`h${Math.min(6, b.l + 1)}`, { dataset: data, dir: 'auto' }, runs(b.runs));
     case 'p':
       if (b.note) return h('div.note', { dataset: data, dir: 'auto' }, h('span.note-label', b.note), ' ', runs(b.runs));
-      return h(`p${b.li ? '.li' : ''}`, { dataset: data, dir: 'auto' }, runs(b.runs));
+      return h(`p${b.li ? '.li' : ''}${b.quote ? '.quote' : ''}${b.nl ? '.nl' : ''}`, { dataset: data, dir: 'auto' }, runs(b.runs));
     case 'code': return h('pre.code', { dataset: data }, h('code', b.text));
     case 'tl': return h(`p.toc-line.l${b.lvl || 0}`, { dataset: data, dir: 'auto' },
       b.to != null ? h('a', { href: '#', dataset: { to: b.to } }, runs(b.runs)) : runs(b.runs),
-      h('span.pn', b.num));
+      b.num ? h('span.pn', b.num) : null);
     case 'il': return h(`p.index-line.l${b.lvl || 0}`, { dataset: data, dir: 'auto' }, runs(b.runs));
     case 'img': return h('figure.fig', { dataset: data },
-      h('img', { dataset: { k: b.k }, alt: '', width: b.w, height: b.h, style: { aspectRatio: `${b.w} / ${b.h}`, maxWidth: `min(100%, ${Math.round(b.w * 1.6)}px)` } }));
+      // PDF sizes are in points (scale up a little); EPUB sizes are real pixels.
+      h('img', { dataset: { k: b.k }, alt: b.alt || '', width: b.w, height: b.h, style: { aspectRatio: `${b.w} / ${b.h}`, maxWidth: `min(100%, ${Math.round(b.w * (reader.isEpub ? 1 : 1.6))}px)` } }));
     case 'table': return h('div.tbl', { dataset: data },
       h('div.scroll', h('table', h('tbody', b.rows.map((row, ri) => h('tr', row.map((c) =>
         h(ri === 0 && row.every((x) => x.b) ? 'th' : 'td', { colSpan: c.cs || 1, rowSpan: c.rs || 1, dir: 'auto' }, c.s))))))),

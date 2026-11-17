@@ -1,14 +1,14 @@
-# Book Reader: PDF → EPUB converter and reader
+# Book Reader: PDF → EPUB converter, and a reader for PDF and EPUB
 
 Turns PDF books and articles into **EPUB 3** files that any e-book app can reflow, such as Google Play Books, ReadEra, Moon+ Reader, Kindle (via Send to Kindle), Calibre and Thorium.
-It is also a reader in its own right: a library, adjustable fonts, progress tracking, and notes that go to Google Keep or Obsidian.
+It is also a reader in its own right for **PDF and EPUB** books: a library, adjustable fonts, progress tracking, and notes that go to Google Keep or Obsidian.
 
 Everything runs **on your device and offline**: no server, no cloud, no AI tokens.
 
 | Where | How |
 |---|---|
-| Android | Installable web app (PWA). You can also share a PDF from any app to "Book Reader". |
-| Windows | The same PWA installed from Edge or Chrome ("Open with → Book Reader" works for `.pdf` files), **plus** a command-line batch converter. |
+| Android | Installable web app (PWA). You can also share a PDF or EPUB from any app to "Book Reader". |
+| Windows | The same PWA installed from Edge or Chrome ("Open with → Book Reader" works for `.pdf` and `.epub` files), **plus** a command-line batch converter. |
 
 ---
 
@@ -28,17 +28,22 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
    - **Running headers/footers** ("Chapter 1", "A Visit to the Dark Web 3") and page numbers are removed from the text.
    - **Two-column layouts** are read column by column.
    - Cover image, title, author and language. **Hebrew and Arabic** get right-to-left text, tables and page order.
-2. **Library** stored on the device. It skips duplicates and asks the browser not to delete it when storage is low.
-3. **Reader**
+2. **Read EPUB files directly** (EPUB 2 and 3). The app reads them on the device and shows them with the same reader as PDFs.
+   - Works with your fonts, themes, progress tracking, notes and contents panel.
+   - Keeps chapters from the book's own contents, plus headings, lists, quotations, code, tables, pictures (SVG too), note boxes and links between chapters.
+   - Shows the book's printed page numbers when the EPUB has a page list (EPUBs made by this app do). Otherwise the reader shows % only.
+   - Copy-protected (DRM) books are refused with a clear message: they can only be opened in the app they were bought for.
+3. **Library** stored on the device. It skips duplicates and asks the browser not to delete it when storage is low.
+4. **Reader**
    - Reflowed text with font, size, line spacing, width and theme controls (Light, Sepia, Dark, Black).
    - The original page view is one tap away.
    - Contents panel.
    - It tracks **chapter, page and %** and resumes where you stopped.
-4. **Notes from selected text**
+5. **Notes from selected text**
    - On Android, the share sheet sends them to Google Keep.
    - On Windows, the note is copied and keep.new opens.
    - You can also append to an Obsidian note per book, copy as Markdown, or export all notes as `.md`. Notes are highlighted in the text.
-5. **App integration**
+6. **App integration**
    - Install it as an app, and it works offline.
    - Windows file association.
    - Android "share to app".
@@ -50,7 +55,6 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
 - Equations kept as images.
 - Tables without any lines, detected from text alignment.
 - Optional "fixed layout" EPUB for comics and magazines.
-- Read EPUB files in the app too.
 - Sync the library between phone and PC through a Google Drive or OneDrive folder.
 - Store packages through PWABuilder: an Android package for Google Play and an MSIX for the Microsoft Store.
 
@@ -145,7 +149,8 @@ js/pdf/regions.js   tables (ruled grids, horizontal-rule tables), pictures, vect
 js/pdf/layout.js    reading order (columns), paragraphs, headings, RTL rules
 js/pdf/extract.js   whole book: headers/footers, body size, image crops, TOC
 js/epub/epub.js     book model → EPUB 3 (OPF, nav, NCX, page list, chapters)
-js/epub/zip.js      ZIP writer      js/epub/export.js   app "Export EPUB"
+js/epub/import.js   EPUB 2/3 → book model (reading EPUBs)    js/epub/load.js  browser glue
+js/epub/zip.js, unzip.js   ZIP writer/reader       js/epub/export.js   app "Export EPUB"
 js/notes/*          notes and where they're sent (Keep, Obsidian, Markdown)
 tools/pdf2epub.mjs  command-line converter    tools/vendor-pdfjs.mjs  update pdf.js
 tests/*             extraction, EPUB and end-to-end browser tests
@@ -154,14 +159,14 @@ samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew)
 
 ### Extending
 - **Another notes destination** (Notion, OneNote, email, your API): add an entry to `PROVIDERS` in `js/notes/providers.js`. It appears in Settings automatically.
-- **Another input format** (DOCX, HTML, EPUB): produce the same *book model* (`{blocks, toc, pages}`, documented at the top of `js/pdf/extract.js`). The reader and the EPUB export then work unchanged.
+- **Another input format** (DOCX, HTML, Markdown): produce the same *book model* (`{blocks, toc, pages}`, documented at the top of `js/pdf/extract.js`). The reader and the EPUB export then work unchanged.
 - **Tuning the conversion:** all the heuristics are named constants in `analyze.js`, `regions.js` and `layout.js`. Add the problem PDF to `samples/` and an assertion to `tests/extract.test.mjs`.
 - **Updating pdf.js:** change the version in `package.json`, then run `npm install && npm run vendor`, and bump `VERSION` in `sw.js`.
 
 ### Tests
 ```bash
 npm install
-npm test                                   # extraction + EPUB structure (Node)
+npm test                                   # PDF extraction, EPUB export, EPUB import (Node)
 EPUBCHECK=path/to/epubcheck.jar npm test   # + official EPUB validator
 python -m http.server 8080 &  python tests/e2e.py --shots shots/   # full browser test (Playwright)
 ```

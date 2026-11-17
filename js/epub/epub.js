@@ -113,7 +113,9 @@ function blockXhtml(b, i, model, ctx) {
     case 'p': {
       if (!textOf(b).trim()) return '';
       if (b.note) return `<div${id} class="note"><p${dir}><b class="label">${esc(b.note)}</b> ${runsXhtml(b.runs)}</p></div>`;
-      return `<p${id}${b.li ? ' class="li"' : ''}${dir}>${runsXhtml(b.runs)}</p>`;
+      const body = runsXhtml(b.runs).replace(/\n/g, '<br/>');
+      if (b.quote) return `<blockquote${id}><p${dir}>${body}</p></blockquote>`;
+      return `<p${id}${b.li ? ' class="li"' : ''}${dir}>${body}</p>`;
     }
     case 'code': {
       if (!b.text.trim()) return '';
@@ -128,7 +130,7 @@ function blockXhtml(b, i, model, ctx) {
     case 'tl': {
       const t = runsXhtml(b.runs);
       const href = b.to != null && ctx.fileOf.has(b.to) ? ctx.link(b.to) : null;
-      return `<p${id} class="toc-line l${b.lvl || 0}"${dir}>${href ? `<a href="${href}">${t}</a>` : t} <span class="pn">${esc(b.num)}</span></p>`;
+      return `<p${id} class="toc-line l${b.lvl || 0}"${dir}>${href ? `<a href="${href}">${t}</a>` : t}${b.num ? ` <span class="pn">${esc(b.num)}</span>` : ''}</p>`;
     }
     case 'il':
       return `<p${id} class="index-line l${b.lvl || 0}"${dir}>${runsXhtml(b.runs)}</p>`;

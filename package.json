@@ -1,13 +1,13 @@
 {
   "name": "book-reader",
   "version": "1.0.0",
-  "description": "PDF to EPUB converter and reader (PWA for Android and Windows, plus a command-line converter).",
+  "description": "PDF to EPUB converter and PDF/EPUB reader (PWA for Android and Windows, plus a command-line converter).",
   "type": "module",
   "private": true,
   "scripts": {
     "pdf2epub": "node tools/pdf2epub.mjs",
     "serve": "npx --yes serve -l 8080 .",
-    "test": "node tests/extract.test.mjs && node tests/epub.test.mjs",
+    "test": "node tests/extract.test.mjs && node tests/epub.test.mjs && node tests/epub-import.test.mjs",
     "test:e2e": "python3 tests/e2e.py",
     "vendor": "node tools/vendor-pdfjs.mjs"
   },
@@ -19,5 +19,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.15"
   }
 }

@@ -1,6 +1,6 @@
 // Service worker: offline app shell + Android share target.
 // Bump VERSION when you deploy changes so clients pick up the new files.
-const VERSION = 'br-v3';
+const VERSION = 'br-v4';
 const SHELL = [
   './',
   './index.html',
@@ -24,6 +24,9 @@ const SHELL = [
   './js/epub/epub.js',
   './js/epub/zip.js',
   './js/epub/export.js',
+  './js/epub/unzip.js',
+  './js/epub/import.js',
+  './js/epub/load.js',
   './vendor/pdfjs/pdf.min.mjs',
   './vendor/pdfjs/pdf.worker.min.mjs',
   './icons/icon-192.png',

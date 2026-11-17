@@ -111,6 +111,10 @@ body.drop .drop-hint { display: grid; place-items: center; position: fixed; inse
 .flow p.toc-line.l1 { padding-left: 1.4em; } .flow p.toc-line.l2 { padding-left: 2.8em; }
 .flow p.index-line { margin: 0; padding-left: 1.4em; text-indent: -1.4em; font-size: .92em; }
 .flow p.index-line.l1 { margin-left: 1.2em; } .flow p.index-line.l2 { margin-left: 2.4em; }
+.flow p.quote { margin-left: 1.2em; padding-left: .8em; border-left: 3px solid var(--border); font-style: italic; }
+.flow p.nl { white-space: pre-line; }
+.flow .pg[data-pg=""]::before { display: none !important; }
+.card .badge.fmt { left: auto; right: 4px; background: var(--accent); color: var(--accent-fg); }
 .flow mark.hl { background: var(--hl); color: inherit; border-radius: 2px; cursor: pointer; }
 .end { text-align: center; font: .85rem var(--ui-font); margin: 3rem 0 1rem; }
 

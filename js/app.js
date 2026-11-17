@@ -41,36 +41,47 @@ function progressUi(name) {
   document.body.append(el);
   return {
     update(done, total, phase) {
-      const pct = phase === 'analyze' ? (done / total) * 85 : 85 + (done / total) * 15;
+      const pct = phase === 'images' ? 85 + (done / total) * 15 : phase === 'chapters' ? (done / total) * 100 : (done / total) * 85;
       bar.style.width = `${pct.toFixed(1)}%`;
-      label.textContent = phase === 'analyze' ? `Reading page ${done} of ${total}` : `Saving pictures and tables (${done}/${total})`;
+      label.textContent = phase === 'analyze' ? `Reading page ${done} of ${total}`
+        : phase === 'chapters' ? `Reading part ${done} of ${total}` : `Saving pictures and tables (${done}/${total})`;
     },
     close() { el.remove(); },
   };
 }
 
 const isPdf = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+const isEpub = (f) => f.type === 'application/epub+zip' || /\.epub$/i.test(f.name || '');
+const FORMATS = {
+  pdf: { mime: 'application/pdf', load: async () => (await import('./pdf/pdfjs.js')).processPdf },
+  epub: { mime: 'application/epub+zip', load: async () => (await import('./epub/load.js')).processEpub },
+};
 
 async function importFiles(files, { open = false, epub = false } = {}) {
   let lastId = null;
   const ids = [];
+  const toConvert = [];
   for (const file of files) {
-    if (!isPdf(file)) { toast(`${file.name}: only PDF files are supported for now`); continue; }
+    const format = isPdf(file) ? 'pdf' : isEpub(file) ? 'epub' : null;
+    if (!format) { toast(`${file.name}: only PDF and EPUB files can be opened`); continue; }
     const buf = await file.arrayBuffer();
     const id = await sha256(buf);
-    if (await get('books', id)) {
+    const existing = await get('books', id);
+    if (existing) {
       if (!epub) toast(`“${file.name}” is already in your library`);
       lastId = id;
       ids.push(id);
+      if ((existing.format || 'pdf') === 'pdf') toConvert.push(id);
       continue;
     }
     const ui = progressUi(file.name);
     try {
-      const { processPdf } = await import('./pdf/pdfjs.js');
-      const res = await processPdf(buf.slice(0), ui.update);
+      const process = await FORMATS[format].load();
+      const res = await process(buf.slice(0), ui.update);
       const book = {
         id,
-        title: cleanTitle(res.title, file.name, res.model),
+        format,
+        title: format === 'epub' ? (res.title || cleanTitle('', file.name, res.model)) : cleanTitle(res.title, file.name, res.model),
         author: res.author,
         pageCount: res.model.pageCount,
         size: file.size,
@@ -81,9 +92,10 @@ async function importFiles(files, { open = false, epub = false } = {}) {
         needsOcr: res.model.needsOcr,
         v: res.model.v,
       };
-      await saveBook(book, new Blob([buf], { type: 'application/pdf' }), res.model, res.images);
+      await saveBook(book, new Blob([buf], { type: FORMATS[format].mime }), res.model, res.images);
       lastId = id;
       ids.push(id);
+      if (format === 'pdf') toConvert.push(id);
       toast(`Added “${book.title}”${book.needsOcr ? ' — some pages are scans (no text)' : ''}`, 4000);
     } catch (err) {
       console.error(err);
@@ -93,13 +105,14 @@ async function importFiles(files, { open = false, epub = false } = {}) {
     }
   }
   persist();
-  if (epub && ids.length) {
+  if (epub && toConvert.length) {
     if (document.body.dataset.view === 'library') await route();
     // One file: show the Download/Share dialog. Several: download them one after another.
-    if (ids.length === 1) await onEpub(ids[0]);
-    else for (const id of ids) await onEpub(id, { direct: true });
+    if (toConvert.length === 1) await onEpub(toConvert[0]);
+    else for (const id of toConvert) await onEpub(id, { direct: true });
     return;
   }
+  if (epub && ids.length) toast('That file is already an EPUB: it was added to your library to read here.', 4000);
   if (open && lastId && files.length === 1) onOpen(lastId);
   else if (document.body.dataset.view === 'library') route();
 }
@@ -110,8 +123,8 @@ async function reprocess(id) {
   if (!book || !file) return;
   const ui = progressUi(book.title);
   try {
-    const { processPdf } = await import('./pdf/pdfjs.js');
-    const res = await processPdf(await file.blob.arrayBuffer(), ui.update);
+    const process = await FORMATS[book.format || 'pdf'].load();
+    const res = await process(await file.blob.arrayBuffer(), ui.update);
     await replaceContent(id, res.model, res.images, { v: res.model.v, needsOcr: res.model.needsOcr, progress: null });
     toast('Book re-processed');
   } catch (err) {
@@ -124,7 +137,7 @@ async function reprocess(id) {
 
 // ---------- OS integrations ----------
 
-// Windows/desktop: "Open with Book Reader" for .pdf files (File Handling API, installed PWA).
+// Windows/desktop: "Open with Book Reader" for .pdf/.epub files (File Handling API, installed PWA).
 if ('launchQueue' in window) {
   window.launchQueue.setConsumer(async (params) => {
     if (!params.files?.length) return;
@@ -146,7 +159,7 @@ async function drainShareInbox() {
     for (const req of keys) {
       const res = await cache.match(req);
       const name = decodeURIComponent(res.headers.get('x-name') || 'shared.pdf');
-      files.push(new File([await res.blob()], name, { type: 'application/pdf' }));
+      files.push(new File([await res.blob()], name, { type: /\.epub$/i.test(name) ? 'application/epub+zip' : 'application/pdf' }));
     }
     history.replaceState(null, '', location.pathname + '#/');
     await importFiles(files, { open: true });
