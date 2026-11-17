@@ -1,5 +1,5 @@
 // App shell: routing (#/ and #/book/<id>), importing PDFs, OS integrations, service worker.
-import { get, persist, replaceContent, saveBook } from './db.js';
+import { get, notesFor, persist, put, replaceContent, saveBook } from './db.js';
 import { renderLibrary } from './library.js';
 import { openReader } from './reader.js';
 import { loadSettings, settings } from './settings.js';
@@ -131,8 +131,14 @@ async function reprocess(id) {
   try {
     const process = await FORMATS[book.format || 'pdf'].load();
     const res = await process(await file.blob.arrayBuffer(), ui.update, { ocr: settings().ocrLang });
-    await replaceContent(id, res.model, res.images, { v: res.model.v, needsOcr: res.model.needsOcr, progress: null });
-    toast('Book re-processed');
+    // Block numbers change: carry position, what was read, bookmarks and notes over by page.
+    const old = await get('content', id);
+    const { remapReading } = await import('./progress.js');
+    const notes = await notesFor(id);
+    const moved = old ? remapReading(old.model, res.model, book, notes) : { progress: null, reading: undefined, notes: [] };
+    await replaceContent(id, res.model, res.images, { v: res.model.v, needsOcr: res.model.needsOcr, progress: moved.progress, reading: moved.reading });
+    for (const n of moved.notes) await put('notes', n);
+    toast('Book re-processed — your place, notes and bookmarks were kept', 3500);
   } catch (err) {
     toast(`Failed: ${err.message || err}`, 6000);
   } finally {

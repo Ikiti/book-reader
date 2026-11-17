@@ -1,5 +1,6 @@
 // Library view: the list of books with cover, progress and last-read position.
 import { all, deleteBook, get, put } from './db.js';
+import { emptyReading } from './progress.js';
 import { bookNotesMarkdown, listNotes } from './notes/notes.js';
 import { settings, updateSettings } from './settings.js';
 import { $, download, fmtDate, h, sheet, toast } from './ui.js';
@@ -39,10 +40,13 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
     const cover = b.cover ? URL.createObjectURL(b.cover) : '';
     if (cover) urls.push(cover);
     const p = b.progress;
-    const pct = Math.round((p?.pct || 0) * 100);
+    const r = b.reading;
+    // Share actually read (books saved before reading was tracked: the position).
+    const pct = Math.round((r ? r.pct || 0 : p?.pct || 0) * 100);
     const isEpub = b.format === 'epub';
     const size = isEpub ? 'EPUB' : `${b.pageCount} page${b.pageCount === 1 ? '' : 's'}`;
-    const where = p ? [p.chapter, p.page ? `p. ${p.page}` : null, `${pct}%`].filter(Boolean).join(' · ') : `${size} · not started`;
+    const where = r?.finishedAt ? `Finished ${fmtDate(r.finishedAt)}${r.bookmarks?.length ? ` · ${r.bookmarks.length} bookmark${r.bookmarks.length > 1 ? 's' : ''}` : ''}`
+      : p ? [`${pct}% read`, p.chapter, p.page ? `p. ${p.page}` : null].filter(Boolean).join(' · ') : `${size} · not started`;
     return h('article.card', { dataset: { id: b.id } },
       h('button.cover', { onclick: () => onOpen(b.id), 'aria-label': `Open ${b.title}` },
         cover ? h('img', { src: cover, alt: '', loading: 'lazy' }) : h('div.nocover', b.title.slice(0, 1)),
@@ -51,7 +55,7 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
       h('div.meta',
         h('button.title', { onclick: () => onOpen(b.id) }, b.title),
         b.author ? h('div.author.muted', b.author) : null,
-        h('div.progress', { title: `${pct}%` }, h('span', { style: { width: `${pct}%` } })),
+        h('div.progress', { title: `${pct}% read` }, h('span', { style: { width: `${pct}%` } })),
         h('div.where.muted', where),
         h('div.when.muted', b.openedAt ? `Opened ${fmtDate(b.openedAt)}` : `Added ${fmtDate(b.addedAt)}`),
         h('div.card-actions',
@@ -77,6 +81,20 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
         const f = await get('files', b.id);
         if (f) download(`${b.title}.${b.format === 'epub' ? 'epub' : 'pdf'}`, f.blob);
       } }, b.format === 'epub' ? 'Download the EPUB file' : 'Download original PDF'),
+      b.progress || b.reading ? h('button', { onclick: async () => {
+        if (!confirm(`Start “${b.title}” over?\n\nWhat you've read is cleared. Notes and bookmarks are kept.`)) return;
+        const cur = await get('books', b.id);
+        await put('books', { ...cur, progress: null, reading: { ...emptyReading(), bookmarks: cur.reading?.bookmarks || [], speed: cur.reading?.speed || emptyReading().speed, ms: cur.reading?.ms || 0 } });
+        s.close();
+        renderLibrary(root, { onImport, onOpen, onReprocess, onEpub });
+      } }, 'Start over (clear reading progress)') : null,
+      b.reading?.finishedAt ? null : h('button', { onclick: async () => {
+        const cur = await get('books', b.id);
+        const n = (await get('content', b.id))?.model.blocks.length || 0;
+        await put('books', { ...cur, reading: { ...emptyReading(), ...(cur.reading || {}), read: [[0, n]], pct: 1, finishedAt: Date.now() } });
+        s.close();
+        renderLibrary(root, { onImport, onOpen, onReprocess, onEpub });
+      } }, 'Mark as finished'),
       h('button', { onclick: () => { s.close(); onReprocess(b.id); } }, 'Re-process (after an app update)'),
       h('button.danger', { onclick: async () => {
         if (!confirm(`Delete “${b.title}” and its notes from this device?`)) return;

@@ -38,21 +38,34 @@ export function toast(msg, ms = 2600) {
   toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
 
+// Open sheets, newest last. Each one adds a history entry so the Back button closes it; closing a
+// sheet in code goes back one entry, and that popstate must not close the next sheet too.
+const openSheets = [];
+let ownBacks = 0;
+window.addEventListener('popstate', () => {
+  if (ownBacks > 0) { ownBacks--; return; }
+  openSheets[openSheets.length - 1]?.dismiss();
+});
+
 /**
  * Bottom sheet (phones) / side panel (wide screens). Returns {el, close}.
  * Closes on backdrop click, Esc, or the browser back button.
  */
 export function sheet(title, body, { side = false, onClose } = {}) {
-  const close = () => {
-    if (!wrap.isConnected) return;
+  const entry = {};
+  const remove = () => {
+    if (!wrap.isConnected) return false;
     wrap.remove();
+    openSheets.splice(openSheets.indexOf(entry), 1);
     window.removeEventListener('keydown', onKey);
-    window.removeEventListener('popstate', onPop);
-    if (history.state?.sheet) history.back();
     onClose?.();
+    return true;
   };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  const onPop = () => { if (wrap.isConnected) { wrap.remove(); onClose?.(); } window.removeEventListener('popstate', onPop); };
+  const close = () => {
+    if (remove() && history.state?.sheet) { ownBacks++; history.back(); }
+  };
+  entry.dismiss = remove; // Back button: the history entry is already gone
+  const onKey = (e) => { if (e.key === 'Escape' && openSheets[openSheets.length - 1] === entry) close(); };
   const panel = h(`div.sheet${side ? '.side' : ''}`, { role: 'dialog', 'aria-label': title },
     h('div.sheet-head', h('h2', title), h('button.icon', { onclick: close, 'aria-label': 'Close', title: 'Close' }, '✕')),
     h('div.sheet-body', body));
@@ -60,7 +73,7 @@ export function sheet(title, body, { side = false, onClose } = {}) {
   document.body.append(wrap);
   window.addEventListener('keydown', onKey);
   history.pushState({ ...(history.state || {}), sheet: true }, '');
-  window.addEventListener('popstate', onPop);
+  openSheets.push(entry);
   return { el: panel, close };
 }
 

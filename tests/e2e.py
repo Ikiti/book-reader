@@ -4,7 +4,8 @@
     python3 tests/e2e.py [--shots DIR] [--url http://localhost:8080/]
 
 Covers: import, reflow (headings/image/table/2 columns), settings, notes + highlight, resume position,
-original-page view, service worker (offline) and the Android share-target endpoint.
+original-page view, service worker (offline), the Android share-target endpoint, reading EPUBs,
+reading progress (chapters, bookmarks, back chip, start over) and OCR of a scanned PDF.
 """
 import argparse
 import os
@@ -297,6 +298,85 @@ with sync_playwright() as p:
     ep.wait_for_selector('.toc-item')
     check('EPUB contents panel', ep.locator('.toc-item').count() >= 4)
     ec.close()
+
+    # ---- Reading progress: what you read, chapters, bookmarks, the way back, start over ----
+    rc = browser.new_context(**phone)
+    rp = rc.new_page()
+    rp.on('pageerror', lambda e: errors.append(str(e)))
+    rp.clock.install()  # time flows normally; run_for() simulates minutes of reading
+    rp.goto(args.url)
+    rp.wait_for_selector('.lib-bar')
+    rp.set_input_files('#pick-import', SAMPLE)
+    rp.wait_for_selector('.card', timeout=60000)
+    rp.locator('.card .cover').click()
+    rp.wait_for_selector('.flow [data-b]')
+    bars(rp)
+    rp.get_by_label('Contents').click()
+    rp.wait_for_selector('.toc-item')
+    rp.locator('.toc-item').nth(2).click()  # jump to the middle of the book: Chapter 3
+    rp.wait_for_timeout(500)
+    chip = rp.locator('.backchip:not([hidden]) .back-go')
+    check(f'back chip after a jump ({chip.inner_text() if chip.count() else "none"})', chip.count() == 1 and 'p. 1' in chip.inner_text())
+    rp.clock.run_for(30000)  # 30 s reading chapter 3
+    rp.wait_for_timeout(300)
+    bars(rp)
+    st = rp.locator('.bar.bottom .status').inner_text()
+    check(f'status: page, time left in chapter, share read ({st})', st.startswith('Page 3') and '% read' in st and not st.endswith(' 0% read'))
+    rp.get_by_label('Contents').click()
+    rp.wait_for_selector('.toc-row')
+    states = rp.evaluate("[...document.querySelectorAll('.toc-row')].map(r => r.classList.contains('done') ? 'done' : r.classList.contains('started') ? 'started' : 'new')")
+    check(f'chapter states after reading only chapter 3 ({states})', states[2] in ('done', 'started') and states[1] == 'new' and states[3] == 'new')
+    rp.wait_for_timeout(300)
+    shot(rp, '24-contents-progress')
+    # Mark chapter 2 as read from its row menu (read it elsewhere)
+    rp.locator('.toc-row').nth(1).locator('.more').click()
+    rp.locator('.toc-row').nth(1).get_by_role('button', name='Mark as read').click()
+    check('chapter marked as read', 'done' in rp.locator('.toc-row').nth(1).get_attribute('class'))
+    rp.keyboard.press('Escape')
+    rp.wait_for_timeout(300)
+    # The way back
+    rp.locator('.backchip .back-go').click()
+    rp.wait_for_timeout(500)
+    check('back chip returns to page 1', rp.locator('.titles .sub').inner_text().startswith('Chapter 1') or rp.locator('.bar.bottom .status').inner_text().startswith('Page 1'))
+    check('chip flips to the place you came from', 'p. 3' in rp.locator('.backchip .back-go').inner_text())
+    # Bookmark (key B) and the Bookmarks tab
+    rp.keyboard.press('b')
+    rp.wait_for_timeout(300)
+    check('bookmark ribbon in the text', rp.locator('.flow .bm').count() == 1)
+    bars(rp)
+    rp.get_by_label('More').click()
+    rp.get_by_role('button', name='Bookmarks…').click()
+    rp.wait_for_selector('.bm-row')
+    check('bookmark listed', rp.locator('.bm-row').count() == 1)
+    rp.wait_for_timeout(300)
+    shot(rp, '25-bookmarks')
+    rp.keyboard.press('Escape')
+    rp.wait_for_timeout(1200)
+    # Library card shows the share read
+    bars(rp)
+    rp.get_by_label('Back to library').click()
+    rp.wait_for_selector('.card')
+    where = rp.locator('.card .where').inner_text()
+    check(f'library card: share read + chapter + page ({where})', '% read' in where and not where.startswith('0%'))
+    shot(rp, '26-library-read')
+    # Start over (keeps bookmarks), then reload: state persisted
+    rp.locator('.card .cover').click()
+    rp.wait_for_selector('.flow [data-b]')
+    bars(rp)
+    rp.get_by_label('More').click()
+    rp.once('dialog', lambda d: d.accept())
+    rp.get_by_role('button', name='Start over…').click()
+    rp.wait_for_timeout(1200)
+    rp.reload()
+    rp.wait_for_selector('.flow [data-b]')
+    rp.wait_for_timeout(500)
+    bars(rp)
+    st = rp.locator('.bar.bottom .status').inner_text()
+    import re
+    read_pct = int(re.search(r'(\d+)% read', st).group(1))
+    check(f'start over: back at the beginning, (almost) nothing read ({st})', st.startswith('Page 1') and read_pct <= 2)
+    check('start over keeps bookmarks', rp.locator('.flow .bm').count() == 1)
+    rc.close()
 
     # ---- Scanned PDF (pages are only pictures): OCR in the browser ----
     oc = browser.new_context(**phone)

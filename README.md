@@ -38,7 +38,7 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
    - Reflowed text with font, size, line spacing, width and theme controls (Light, Sepia, Dark, Black).
    - The original page view is one tap away.
    - Contents panel.
-   - It tracks **chapter, page and %** and resumes where you stopped.
+   - It tracks **where you are** (chapter, page) and **what you've actually read**, per chapter, with bookmarks and a way back after jumps. See [Reading progress](#reading-progress).
 5. **Notes from selected text**
    - On Android, the share sheet sends them to Google Keep.
    - On Windows, the note is copied and keep.new opens.
@@ -96,7 +96,31 @@ Netlify, Cloudflare Pages or an internal IIS or nginx server work the same way: 
 On a phone, open the EPUB with ReadEra, Moon+ Reader, Lithium or Google Play Books (upload). On Windows, use Thorium Reader or Calibre, or Kindle through Send to Kindle, which accepts EPUB.
 
 ### Reader keys (Windows)
-`T` contents · `N` notes · `A` text settings · `E` export EPUB · `O` original pages · `+`/`-` text size · `←`/`→` page · `Esc` library.
+`T` contents · `N` notes · `B` bookmark · `G` go to page · `A` text settings · `E` export EPUB · `O` original pages · `+`/`-` text size · `←`/`→` page · `Esc` library.
+
+---
+
+## Reading progress
+
+The app keeps two separate things for each book:
+
+- **Where you are**: the paragraph at the top of the screen. The book reopens there, on any change of font or size.
+- **What you've read**: each paragraph counts as read once it has been on screen about as long as a fast reader needs for it (≈350 words/min). Scrolling or jumping past text doesn't count; reading two paragraphs in the middle of a chapter marks just those two.
+
+Common situations:
+
+| You want to… | What to do |
+|---|---|
+| Read one chapter from the middle | ☰ Contents → tap it. A **↩ Back to p. X** chip appears; tap it to return (tap again to flip back). |
+| See what's left | ☰ Contents: each chapter shows ○ not read, ◐ started (with % and time left), ✓ read. The status bar shows time left in the chapter and the book's % read. |
+| Continue a chapter you left halfway | Tap the chapter: started chapters open where you stopped in them (⋯ → *Go to start* for the beginning). |
+| Read only a few lines, then leave | Just those paragraphs are marked; the chapter shows as started. |
+| You read a chapter elsewhere, or want to read it again | Chapter ⋯ → **Mark as read** / **Mark as unread** (also in the reader's ⋮ menu for the current chapter). |
+| Read the book again | ⋮ → **Start over…** (or Library → ⋮). Progress clears; notes and bookmarks stay. |
+| Keep several places | ⋮ → **Bookmark this place** (`B`); they're listed under ☰ → Bookmarks. |
+| Follow a printed page reference | ⋮ → **Go to page…** (`G`) uses the book's own page numbers. |
+
+The library card shows the share read, chapter and page, or *Finished* with the date. Time estimates use your own reading speed in that book, measured as you read. Re-processing a book after an app update keeps your place, what you read, bookmarks and notes.
 
 ---
 
@@ -150,6 +174,7 @@ js/epub/zip.js, unzip.js   ZIP writer/reader       js/epub/export.js   app "Expo
 js/ocr/raster.js    page picture analysis: shaded boxes, table lines, pictures, stroke weight
 js/ocr/page.js      OCR words → the same fragments as a text PDF (code, bullets, bold, tables)
 js/ocr/provider.js  Tesseract worker, language choice, second pass for missed lines
+js/progress.js      reading progress: what's read (block ranges), chapters, speed, re-process remap
 js/notes/*          notes and where they're sent (Keep, Obsidian, Markdown)
 tools/pdf2epub.mjs  command-line converter    tools/node-ocr.mjs  OCR in Node
 tools/vendor.mjs    copies pdf.js and Tesseract into vendor/ (npm run vendor)
@@ -166,7 +191,7 @@ samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew, tech
 ### Tests
 ```bash
 npm install
-npm test                                   # PDF extraction, OCR, EPUB export, EPUB import (Node)
+npm test                                   # PDF extraction, OCR, EPUB export/import, reading progress (Node)
 EPUBCHECK=path/to/epubcheck.jar npm test   # + official EPUB validator
 python -m http.server 8080 &  python tests/e2e.py --shots shots/   # full browser test (Playwright)
 ```

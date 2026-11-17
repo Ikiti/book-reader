@@ -1,6 +1,11 @@
 // Reader view: reflowed text (font/size/theme adjustable) or the original PDF pages.
-// Tracks position (block, page, chapter, %) and handles notes from selected text.
+// Tracks where you are (block, page, chapter) and what you've read (see progress.js), plus
+// bookmarks, a "back" chip after jumps, and notes from selected text.
 import { get, put } from './db.js';
+import {
+  FINISHED_SHARE, addRange, blockSizes, chapterRanges, creditVisible, emptyReading, loadReading, prefix,
+  rangeStats, readSize, removeRange, timeFor, updateSpeed,
+} from './progress.js';
 import { deleteNote, listNotes, newNote, saveNote, bookNotesMarkdown } from './notes/notes.js';
 import { PROVIDERS, copy, defaultProviderId, sendNote } from './notes/providers.js';
 import { FONTS, THEMES, settings, updateSettings } from './settings.js';
@@ -25,14 +30,19 @@ class Reader {
     this.notes = [];
     this.cleanup = [];
     this.pos = book.progress || null;
-    // Reading progress by amount of text (independent of layout, fonts and lazy rendering).
-    let acc = 0;
-    this.cum = model.blocks.map((b) => {
-      const start = acc;
-      acc += b.runs ? b.runs.reduce((n, r) => n + r.s.length, 0) : b.t === 'table' ? 200 : 300;
-      return start;
-    });
-    this.total = Math.max(1, acc);
+    // Progress is measured in amount of text (independent of layout, fonts and lazy rendering).
+    this.sizes = blockSizes(model.blocks);
+    this.pre = prefix(this.sizes);
+    this.total = Math.max(1, this.pre[this.sizes.length]);
+    this.chapters = chapterRanges(model.toc || [], model.blocks.length);
+    this.reading = loadReading(book, model.blocks.length);
+    this.credit = new Map(); // block → seconds-worth of attention so far (not yet "read")
+    this.visible = new Set(); // blocks on screen
+    this.byPage = new Map(); // pg → blocks (original-pages view)
+    model.blocks.forEach((b, i) => { if (!this.byPage.has(b.pg)) this.byPage.set(b.pg, []); this.byPage.get(b.pg).push(i); });
+    this.lastActive = Date.now();
+    this.advanced = 0; // chars moved forward while reading (speed measurement)
+    this.activeSecs = 0;
   }
 
   /** Printed page number (book's own numbering) for a page index. */
@@ -43,8 +53,14 @@ class Reader {
   }
 
   pctAt(b, off = 0) {
-    const next = b + 1 < this.cum.length ? this.cum[b + 1] : this.total;
-    return Math.min(1, (this.cum[b] + off * (next - this.cum[b])) / this.total);
+    return Math.min(1, (this.pre[b] + off * (this.sizes[b] || 0)) / this.total);
+  }
+
+  /** Outermost contents entry (chapter) containing block b, and the innermost (section). */
+  chapterRangeAt(b) {
+    let outer = null;
+    for (const c of this.chapters) if (c.from <= b && b < c.to && (!outer || c.level < outer.level)) outer = c;
+    return outer;
   }
 
   async mount() {
@@ -68,23 +84,37 @@ class Reader {
         h('button.icon', { onclick: () => this.showToc(), title: 'Contents (T)', 'aria-label': 'Contents' }, '☰'),
         h('button.icon', { onclick: () => this.showNotes(), title: 'Notes (N)', 'aria-label': 'Notes' }, '🗒'),
         h('button.icon', { onclick: () => this.showSettings(), title: 'Text settings (A)', 'aria-label': 'Text settings' }, 'Aa'),
-        this.isEpub ? null : h('button.icon', { onclick: async () => (await import('./epub/export.js')).exportEpub(book.id), title: 'Export EPUB (E)', 'aria-label': 'Export EPUB' }, '⤓'),
-        this.modeBtn),
+        this.modeBtn,
+        h('button.icon', { onclick: () => this.showMenu(), title: 'More: bookmarks, go to page, start over…', 'aria-label': 'More' }, '⋮')),
       this.flow,
       this.pagesEl,
       h('footer.bar.bottom', this.status),
       this.selbar,
+      this.backChip = h('div.backchip', { hidden: true },
+        h('button.back-go', { onclick: () => this.goBack() }),
+        h('button.icon.small', { onclick: () => this.hideBack(), 'aria-label': 'Hide' }, '✕')),
     );
     this.renderFlow();
     if (!this.isEpub && (this.model.v || 1) < EXTRACT_VERSION) toast('This book was converted by an older version. Library → ⋮ → Re-process for better results.', 6000);
     this.notes = await listNotes(book.id);
     this.paintHighlights();
+    this.paintBookmarks();
+    this.watchVisible();
     this.restore();
 
     const onScroll = throttle(() => this.track(), 250);
     const onSel = debounce(() => this.onSelection(), 180);
     const onKey = (e) => this.onKey(e);
     const onHide = () => { if (document.visibilityState === 'hidden') this.save(true); };
+    const onPageHide = () => this.save(true);
+    addEventListener('pagehide', onPageHide);
+    this.cleanup.push(() => removeEventListener('pagehide', onPageHide));
+    const onActive = () => { this.lastActive = Date.now(); };
+    // Reading clock: every second on screen spreads attention over the visible text.
+    this.lastTick = performance.now();
+    const ticker = setInterval(() => this.tick(), 1000);
+    for (const ev of ['scroll', 'pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(ev, onActive, { passive: true });
+    this.cleanup.push(() => { clearInterval(ticker); for (const ev of ['scroll', 'pointerdown', 'keydown', 'wheel', 'touchstart']) removeEventListener(ev, onActive); });
     let lastY = scrollY;
     const onImmersive = () => {
       const dy = scrollY - lastY;
@@ -109,20 +139,23 @@ class Reader {
       if (!a) return;
       e.preventDefault();
       e.stopPropagation();
-      this.goToBlock(+a.dataset.to, 0);
+      this.jumpTo(+a.dataset.to);
     }, true);
     // Tap on the text (without selecting) toggles the bars, like an e-reader.
     this.flow.addEventListener('click', (e) => {
       if (e.target.closest('a,button,mark,img,table') || String(getSelection())) return;
       document.body.classList.toggle('immersive');
     });
-    await put('books', { ...book, openedAt: Date.now() });
+    this.book = { ...this.book, openedAt: Date.now() };
+    await put('books', this.book);
   }
 
   destroy() {
     this.save(true);
     this.cleanup.forEach((f) => f());
     this.io?.disconnect();
+    this.visIo?.disconnect();
+    clearTimeout(this.backTimer);
     this.pageIo?.disconnect();
     this.pdf?.close();
     this.urls.forEach(URL.revokeObjectURL);
@@ -207,28 +240,95 @@ class Reader {
     const pct = atEnd ? 1 : this.pctAt(b, off);
     const ch = this.chapterAt(b);
     this.pos = { b, off, pgi: blk.pg, page: this.label(blk.pg), pct, chapter: ch?.title || '' };
+    this.measure(b, off);
     this.showStatus();
     this.save();
+  }
+
+  /** Reading speed: text you moved forward through while reading (jumps don't count). */
+  measure(b, off) {
+    const at = this.pre[b] + off * this.sizes[b];
+    if (this.lastAt != null && !this.jumped) {
+      const d = at - this.lastAt;
+      if (d > 0 && d < 5000) this.advanced += d;
+    }
+    this.jumped = false;
+    this.lastAt = at;
+  }
+
+  /** Blocks currently on screen (between the bars), kept up to date by an observer. */
+  watchVisible() {
+    this.visIo?.disconnect();
+    this.visible.clear();
+    this.visIo = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const b = +e.target.dataset.b;
+        if (e.isIntersecting) this.visible.add(b); else this.visible.delete(b);
+      }
+    }, { rootMargin: '-56px 0px -40px 0px' });
+    this.flow.querySelectorAll('[data-b]').forEach((el) => this.visIo.observe(el));
+  }
+
+  tick() {
+    const now = performance.now();
+    const dt = Math.min(5, (now - this.lastTick) / 1000);
+    this.lastTick = now;
+    // Not reading: app in the background, a panel open, or nobody touched anything for 4 minutes.
+    if (document.visibilityState !== 'visible' || document.querySelector('.backdrop') || Date.now() - this.lastActive > 240000) return;
+    const r = this.reading;
+    r.ms = (r.ms || 0) + dt * 1000;
+    this.activeSecs += dt;
+    if (this.activeSecs >= 90) {
+      r.speed = updateSpeed(r.speed, this.advanced, this.activeSecs);
+      this.activeSecs = 0;
+      this.advanced = 0;
+    }
+    const vis = this.mode === 'pages' ? (this.byPage.get(this.pos?.pgi) || []) : [...this.visible].sort((a, b) => a - b);
+    const done = creditVisible(r, this.credit, this.sizes, vis, dt);
+    if (done.length) this.onRead();
+    else if (Math.round(r.ms / 1000) % 30 === 0) this.save(); // keep the reading time
+  }
+
+  /** Something new was read, or progress was changed by hand (`now`: save at once). */
+  onRead(now = false) {
+    const r = this.reading;
+    r.pct = readSize(r.read, this.pre) / this.total;
+    if (r.pct >= FINISHED_SHARE && !r.finishedAt) {
+      r.finishedAt = Date.now();
+      toast(`You've finished “${this.book.title}” 🎉`, 4000);
+    }
+    this.showStatus();
+    this.save(now);
   }
 
   showStatus() {
     const p = this.pos;
     if (!p) return;
     this.chapterEl.textContent = p.chapter || '';
-    this.status.textContent = p.page ? `Page ${p.page} · ${Math.round(p.pct * 100)}%` : `${Math.round(p.pct * 100)}%`;
+    const parts = [];
+    if (p.page) parts.push(`Page ${p.page}`);
+    const ch = this.chapterRangeAt(p.b);
+    if (ch) {
+      const left = (this.pre[ch.to] - this.pre[p.b]) - readSize(this.reading.read, this.pre, p.b, ch.to);
+      parts.push(left > 0 ? `${timeFor(left, this.reading.speed)} left in chapter` : 'chapter read');
+    }
+    parts.push(`${Math.round((this.reading.pct || 0) * 100)}% read`);
+    this.status.textContent = parts.join(' · ');
   }
 
   save(now = false) {
     clearTimeout(this.saveTimer);
-    const write = async () => {
+    // One write, started right away (no read first): it also completes when the page is closing.
+    const write = () => {
       if (!this.pos) return;
-      const cur = await get('books', this.book.id);
-      if (cur) await put('books', { ...cur, progress: this.pos, openedAt: Date.now() });
+      this.book = { ...this.book, progress: this.pos, reading: this.reading, openedAt: Date.now() };
+      put('books', this.book).catch((err) => console.warn('save failed', err));
     };
     if (now) write(); else this.saveTimer = setTimeout(write, 800);
   }
 
   restore() {
+    this.reading.pct = readSize(this.reading.read, this.pre) / this.total;
     const p = this.pos;
     if (!p || !this.model.blocks[p.b]) { this.pos = null; this.track(); return; }
     this.goToBlock(p.b, p.off || 0);
@@ -237,6 +337,7 @@ class Reader {
   goToBlock(b, off = 0) {
     const el = this.flow.querySelector(`[data-b="${b}"]`);
     if (!el) return;
+    this.jumped = true;
     const jump = () => {
       const rect = el.getBoundingClientRect();
       scrollTo({ top: scrollY + rect.top + off * rect.height - this.topOffset() + 1, behavior: 'instant' });
@@ -421,21 +522,173 @@ class Reader {
     }
   }
 
-  // ---------- panels ----------
-  showToc() {
-    const cur = this.chapterAt(this.pos?.b ?? 0);
-    const items = this.model.toc.map((t) => h(`button.toc-item.l${t.level}${t === cur ? '.current' : ''}`, {
-      onclick: () => { s.close(); this.jumpTo(t.b); },
-    }, h('span', t.title), h('span.muted', this.label(t.pg))));
-    const s = sheet('Contents', items.length ? h('nav.toc', items) : h('p.muted', 'This document has no chapters or headings.'), { side: true });
-    s.el.querySelector('.current')?.scrollIntoView({ block: 'center' });
-  }
-
-  jumpTo(b) {
+  // ---------- jumps and the way back ----------
+  /**
+   * Go to a block from the contents, a bookmark, a note or a link. If that's far from where you
+   * were, a "↩ Back to p. X" chip lets you return (and tapping it again flips back).
+   */
+  jumpTo(b, off = 0, { remember = true } = {}) {
+    const from = this.pos;
     if (this.mode === 'pages') {
       const pg = this.model.blocks[b]?.pg + 1;
       this.pagesEl.querySelector(`[data-page="${pg}"]`)?.scrollIntoView({ behavior: 'instant' });
-    } else this.goToBlock(b, 0);
+    } else this.goToBlock(b, off);
+    if (remember && from && Math.abs(this.pre[b] - this.pre[from.b]) > 1500) this.showBack(from);
+  }
+
+  showBack(pos) {
+    this.backPos = pos;
+    this.backChip.querySelector('.back-go').textContent = `↩ Back to ${pos.page ? `p. ${pos.page}` : pos.chapter || 'where you were'}`;
+    this.backChip.hidden = false;
+    clearTimeout(this.backTimer);
+    this.backTimer = setTimeout(() => this.hideBack(), 180000);
+  }
+
+  hideBack() { this.backChip.hidden = true; clearTimeout(this.backTimer); }
+
+  goBack() {
+    const to = this.backPos;
+    if (!to) return;
+    const here = this.pos;
+    this.jumpTo(to.b, to.off || 0, { remember: false });
+    if (here) this.showBack(here); // tap again to flip back
+  }
+
+  // ---------- contents, with what you've read ----------
+  showToc(tab = 'toc') {
+    const body = h('div.toc-wrap');
+    const s = sheet('Contents', body, { side: true });
+    const render = (which) => {
+      tab = which;
+      const nb = this.reading.bookmarks.length;
+      body.replaceChildren(
+        h('div.tabs', { role: 'tablist' },
+          h(`button.tab${tab === 'toc' ? '.on' : ''}`, { role: 'tab', onclick: () => render('toc') }, 'Chapters'),
+          h(`button.tab${tab === 'bm' ? '.on' : ''}`, { role: 'tab', onclick: () => render('bm') }, `Bookmarks${nb ? ` (${nb})` : ''}`)),
+        tab === 'toc' ? this.tocList(s, () => render('toc')) : this.bookmarkList(s, () => render('bm')));
+      body.querySelector('.current')?.scrollIntoView({ block: 'center' });
+    };
+    render(tab);
+  }
+
+  tocList(s, refresh) {
+    const r = this.reading;
+    const speed = r.speed;
+    const book = rangeStats(r, this.pre, 0, this.sizes.length);
+    const summary = h('div.read-summary',
+      h('div.progress', h('span', { style: { width: `${Math.round(book.pct * 100)}%` } })),
+      h('div.muted.small', [
+        r.finishedAt ? `Finished ${fmtDate(r.finishedAt)}` : `${Math.round(book.pct * 100)}% read`,
+        book.total - book.read > 0 && !r.finishedAt ? `about ${timeFor(book.total - book.read, speed)} left` : '',
+        r.ms > 60000 ? `${timeFor((r.ms / 1000) * speed, speed)} spent` : '',
+      ].filter(Boolean).join(' · ')));
+    if (!this.chapters.length) return h('div', summary, h('p.muted', 'This document has no chapters or headings.'));
+    const cur = this.chapterAt(this.pos?.b ?? 0);
+    const go = (b) => { s.close(); this.jumpTo(b); };
+    const rows = this.chapters.map((c) => {
+      const st = rangeStats(r, this.pre, c.from, c.to);
+      const icon = st.state === 'done' ? '✓' : st.state === 'started' ? '◐' : '○';
+      const meta = st.state === 'done' ? 'read' : st.state === 'started'
+        ? `${Math.max(1, Math.round(st.pct * 100))}% · ${timeFor(st.total - st.read, speed)} left` : timeFor(st.total, speed);
+      const actions = h('div.toc-actions', { hidden: true },
+        h('button.small', { onclick: () => go(c.from) }, 'Go to start'),
+        st.state === 'started' ? h('button.small', { onclick: () => go(st.next) }, `Continue at p. ${this.label(this.model.blocks[st.next].pg)}`) : null,
+        st.state !== 'done' ? h('button.small', { onclick: () => { r.read = addRange(r.read, c.from, c.to); this.onRead(true); refresh(); } }, 'Mark as read') : null,
+        st.read > 0 ? h('button.small', { onclick: () => { r.read = removeRange(r.read, c.from, c.to); r.finishedAt = 0; this.onRead(true); refresh(); } }, 'Mark as unread') : null);
+      const t = c.title;
+      return h(`div.toc-row.l${c.level}.${st.state}`,
+        h(`button.toc-item.l${c.level}${this.model.toc[this.chapters.indexOf(c)] === cur ? '.current' : ''}`,
+          { onclick: () => go(st.state === 'started' ? st.next : c.from), title: st.state === 'started' ? 'Continue where you stopped in this chapter' : 'Go to chapter' },
+          h('span.state', { 'aria-label': st.state === 'done' ? 'read' : st.state === 'started' ? 'started' : 'not read' }, icon),
+          h('span.t', t), h('span.muted.pg', this.label(c.pg))),
+        h('div.toc-meta', h('span.muted.small', meta),
+          h('button.icon.small.more', { 'aria-label': `Options for ${t}`, onclick: () => { actions.hidden = !actions.hidden; } }, '⋯')),
+        actions);
+    });
+    return h('div', summary, h('nav.toc', rows));
+  }
+
+  // ---------- bookmarks ----------
+  bookmarkAt(b) { return this.reading.bookmarks.find((m) => m.b === b); }
+
+  toggleBookmark() {
+    const p = this.pos;
+    if (!p) return;
+    const old = this.bookmarkAt(p.b);
+    if (old) {
+      this.reading.bookmarks = this.reading.bookmarks.filter((m) => m !== old);
+      toast('Bookmark removed');
+    } else {
+      const blk = this.model.blocks[p.b];
+      const text = (blk.runs ? blk.runs.map((x) => x.s).join('') : blk.text || '').replace(/\s+/g, ' ').trim();
+      this.reading.bookmarks.push({ id: `${Date.now().toString(36)}`, b: p.b, off: p.off, pgi: p.pgi, page: p.page, chapter: p.chapter, text: text.slice(0, 100), at: Date.now() });
+      this.reading.bookmarks.sort((a, b) => a.b - b.b);
+      toast(`Bookmarked${p.page ? ` p. ${p.page}` : ''}`);
+    }
+    this.paintBookmarks();
+    this.save(true);
+  }
+
+  paintBookmarks() {
+    this.flow.querySelectorAll('.bm').forEach((el) => el.classList.remove('bm'));
+    for (const m of this.reading.bookmarks) this.flow.querySelector(`[data-b="${m.b}"]`)?.classList.add('bm');
+  }
+
+  bookmarkList(s, refresh) {
+    const here = this.pos && this.bookmarkAt(this.pos.b);
+    const add = h('button.small', { onclick: () => { this.toggleBookmark(); refresh(); } }, here ? 'Remove the bookmark here' : '🔖 Bookmark this place');
+    const list = this.reading.bookmarks.map((m) => h('div.bm-row',
+      h('button.bm-go', { onclick: () => { s.close(); this.jumpTo(m.b, m.off || 0); } },
+        h('div', [m.page && `p. ${m.page}`, m.chapter].filter(Boolean).join(' · ') || 'Bookmark'),
+        m.text ? h('div.muted.small', { dir: 'auto' }, m.text) : null),
+      h('button.icon.small', { 'aria-label': 'Delete bookmark', onclick: () => {
+        this.reading.bookmarks = this.reading.bookmarks.filter((x) => x !== m);
+        this.paintBookmarks(); this.save(true); refresh();
+      } }, '✕')));
+    return h('div', h('div.actions.top', add),
+      list.length ? h('div.bm-list', list) : h('p.muted', 'No bookmarks yet. Use ⋮ → Bookmark, or press B.'));
+  }
+
+  // ---------- ⋮ menu ----------
+  showMenu() {
+    const p = this.pos;
+    const ch = p ? this.chapterRangeAt(p.b) : null;
+    const chSt = ch ? rangeStats(this.reading, this.pre, ch.from, ch.to) : null;
+    const act = (label, fn, cls = '') => h(`button${cls}`, { onclick: () => { s.close(); fn(); } }, label);
+    const s = sheet(this.book.title, h('div.menu',
+      act(p && this.bookmarkAt(p.b) ? 'Remove bookmark here' : '🔖 Bookmark this place  (B)', () => this.toggleBookmark()),
+      act('Bookmarks…', () => this.showToc('bm')),
+      this.model.pageless ? null : act('Go to page…  (G)', () => this.goToPage()),
+      ch && chSt.state !== 'done' ? act(`Mark “${short(ch.title)}” as read`, () => { this.reading.read = addRange(this.reading.read, ch.from, ch.to); this.onRead(true); toast('Chapter marked as read'); }) : null,
+      ch && chSt.read > 0 ? act(`Mark “${short(ch.title)}” as unread`, () => { this.reading.read = removeRange(this.reading.read, ch.from, ch.to); this.reading.finishedAt = 0; this.onRead(true); toast('Chapter marked as unread'); }) : null,
+      this.isEpub ? null : act('Export EPUB  (E)', async () => (await import('./epub/export.js')).exportEpub(this.book.id)),
+      act('Start over…', () => this.startOver()),
+      this.reading.finishedAt ? null : act('Mark the book as finished', () => { this.reading.read = [[0, this.sizes.length]]; this.onRead(true); }),
+    ));
+  }
+
+  goToPage() {
+    const n = this.model.pages?.length || 0;
+    const ans = prompt(`Go to page (as printed in the book; ${this.label(0)}–${this.label(n - 1)})`, this.pos?.page || '');
+    if (!ans) return;
+    const want = ans.trim().toLowerCase();
+    let pg = this.model.pages.findIndex((_, i) => this.label(i).toLowerCase() === want);
+    if (pg < 0 && /^\d+$/.test(want)) pg = Math.min(n - 1, Math.max(0, +want - 1)); // file page number
+    if (pg < 0) { toast(`No page “${ans}”`); return; }
+    const b = this.model.blocks.findIndex((x) => x.pg >= pg);
+    if (b >= 0) this.jumpTo(b);
+  }
+
+  startOver() {
+    if (!confirm(`Start “${this.book.title}” over?\n\nWhat you've read is cleared and you go back to the beginning. Notes and bookmarks are kept.`)) return;
+    const from = this.pos;
+    const time = this.reading.ms;
+    this.reading = { ...emptyReading(), bookmarks: this.reading.bookmarks, speed: this.reading.speed, ms: time };
+    this.credit.clear();
+    this.goToBlock(0, 0);
+    if (from) this.showBack(from);
+    this.onRead(true);
+    toast('Starting over — your notes and bookmarks are kept', 3500);
   }
 
   async showNotes() {
@@ -515,6 +768,8 @@ class Reader {
     else if (k === 'a' || k === 'A') this.showSettings();
     else if ((k === 'o' || k === 'O') && !this.isEpub) this.toggleMode();
     else if ((k === 'e' || k === 'E') && !this.isEpub) import('./epub/export.js').then((m) => m.exportEpub(this.book.id));
+    else if (k === 'b' || k === 'B') this.toggleBookmark();
+    else if ((k === 'g' || k === 'G') && !this.model.pageless) this.goToPage();
     else if (k === '+' || k === '=') updateSettings({ size: Math.min(36, settings().size + 1) });
     else if (k === '-') updateSettings({ size: Math.max(12, settings().size - 1) });
     else if (k === 'ArrowRight' || k === 'ArrowLeft') {
@@ -588,6 +843,8 @@ function markText(el, quote, id, onClick) {
     range.insertNode(mark);
   } catch { /* overlapping highlight: skip */ }
 }
+
+const short = (t) => (t.length > 34 ? `${t.slice(0, 32)}…` : t);
 
 function throttle(fn, ms) {
   let t = 0;
