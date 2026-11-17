@@ -1,0 +1,178 @@
+// App shell: routing (#/ and #/book/<id>), importing PDFs, OS integrations, service worker.
+import { get, persist, replaceContent, saveBook } from './db.js';
+import { renderLibrary } from './library.js';
+import { openReader } from './reader.js';
+import { loadSettings } from './settings.js';
+import { cleanTitle } from './pdf/title.js';
+import { $, h, toast } from './ui.js';
+
+const root = $('#app');
+let closeView = null;
+
+async function route() {
+  closeView?.();
+  closeView = null;
+  scrollTo(0, 0);
+  const m = location.hash.match(/^#\/book\/([\w-]+)/);
+  document.body.dataset.view = m ? 'reader' : 'library';
+  if (m) {
+    closeView = await openReader(root, m[1], { onBack: () => { location.hash = '#/'; } });
+  } else {
+    await renderLibrary(root, { onImport: importFiles, onOpen, onReprocess: reprocess, onEpub });
+    if (location.hash.startsWith('#/inbox')) drainShareInbox();
+  }
+}
+
+const onOpen = (id) => { location.hash = `#/book/${id}`; };
+const onEpub = async (id, opts) => (await import('./epub/export.js')).exportEpub(id, opts);
+
+// ---------- import ----------
+
+async function sha256(buf) {
+  const d = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(d)].slice(0, 12).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function progressUi(name) {
+  const bar = h('span');
+  const label = h('div.muted', 'Reading file…');
+  const el = h('div.backdrop.busy', h('div.sheet.progress-sheet', { role: 'dialog', 'aria-label': 'Importing' },
+    h('h2', `Importing “${name}”`), label, h('div.progress.big', bar)));
+  document.body.append(el);
+  return {
+    update(done, total, phase) {
+      const pct = phase === 'analyze' ? (done / total) * 85 : 85 + (done / total) * 15;
+      bar.style.width = `${pct.toFixed(1)}%`;
+      label.textContent = phase === 'analyze' ? `Reading page ${done} of ${total}` : `Saving pictures and tables (${done}/${total})`;
+    },
+    close() { el.remove(); },
+  };
+}
+
+const isPdf = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+
+async function importFiles(files, { open = false, epub = false } = {}) {
+  let lastId = null;
+  const ids = [];
+  for (const file of files) {
+    if (!isPdf(file)) { toast(`${file.name}: only PDF files are supported for now`); continue; }
+    const buf = await file.arrayBuffer();
+    const id = await sha256(buf);
+    if (await get('books', id)) {
+      if (!epub) toast(`“${file.name}” is already in your library`);
+      lastId = id;
+      ids.push(id);
+      continue;
+    }
+    const ui = progressUi(file.name);
+    try {
+      const { processPdf } = await import('./pdf/pdfjs.js');
+      const res = await processPdf(buf.slice(0), ui.update);
+      const book = {
+        id,
+        title: cleanTitle(res.title, file.name, res.model),
+        author: res.author,
+        pageCount: res.model.pageCount,
+        size: file.size,
+        addedAt: Date.now(),
+        openedAt: 0,
+        cover: res.cover,
+        progress: null,
+        needsOcr: res.model.needsOcr,
+        v: res.model.v,
+      };
+      await saveBook(book, new Blob([buf], { type: 'application/pdf' }), res.model, res.images);
+      lastId = id;
+      ids.push(id);
+      toast(`Added “${book.title}”${book.needsOcr ? ' — some pages are scans (no text)' : ''}`, 4000);
+    } catch (err) {
+      console.error(err);
+      toast(`Could not import ${file.name}: ${err.message || err}`, 6000);
+    } finally {
+      ui.close();
+    }
+  }
+  persist();
+  if (epub && ids.length) {
+    if (document.body.dataset.view === 'library') await route();
+    // One file: show the Download/Share dialog. Several: download them one after another.
+    if (ids.length === 1) await onEpub(ids[0]);
+    else for (const id of ids) await onEpub(id, { direct: true });
+    return;
+  }
+  if (open && lastId && files.length === 1) onOpen(lastId);
+  else if (document.body.dataset.view === 'library') route();
+}
+
+async function reprocess(id) {
+  const book = await get('books', id);
+  const file = await get('files', id);
+  if (!book || !file) return;
+  const ui = progressUi(book.title);
+  try {
+    const { processPdf } = await import('./pdf/pdfjs.js');
+    const res = await processPdf(await file.blob.arrayBuffer(), ui.update);
+    await replaceContent(id, res.model, res.images, { v: res.model.v, needsOcr: res.model.needsOcr, progress: null });
+    toast('Book re-processed');
+  } catch (err) {
+    toast(`Failed: ${err.message || err}`, 6000);
+  } finally {
+    ui.close();
+    route();
+  }
+}
+
+// ---------- OS integrations ----------
+
+// Windows/desktop: "Open with Book Reader" for .pdf files (File Handling API, installed PWA).
+if ('launchQueue' in window) {
+  window.launchQueue.setConsumer(async (params) => {
+    if (!params.files?.length) return;
+    const files = await Promise.all(params.files.map((fh) => fh.getFile()));
+    importFiles(files, { open: true });
+  });
+}
+
+// Android: PDFs shared to the app land in a cache (see sw.js share target).
+let draining = false;
+async function drainShareInbox() {
+  if (draining || !('caches' in window)) return;
+  draining = true;
+  try {
+    const cache = await caches.open('share-inbox');
+    const keys = await cache.keys();
+    if (!keys.length) return;
+    const files = [];
+    for (const req of keys) {
+      const res = await cache.match(req);
+      const name = decodeURIComponent(res.headers.get('x-name') || 'shared.pdf');
+      files.push(new File([await res.blob()], name, { type: 'application/pdf' }));
+    }
+    history.replaceState(null, '', location.pathname + '#/');
+    await importFiles(files, { open: true });
+    // Remove only after a successful import, so a closed app doesn't lose the file.
+    await Promise.all(keys.map((k) => cache.delete(k)));
+  } finally {
+    draining = false;
+  }
+}
+
+// Drag & drop anywhere (desktop).
+addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); document.body.classList.add('drop'); } });
+addEventListener('dragleave', (e) => { if (e.target === document.documentElement || !e.relatedTarget) document.body.classList.remove('drop'); });
+addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('drop');
+  const files = [...(e.dataTransfer?.files || [])];
+  if (files.length) importFiles(files);
+});
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW registration failed', e));
+}
+
+// ---------- start ----------
+addEventListener('hashchange', route);
+await loadSettings();
+await route();
+window.bookReader = { importFiles }; // handy for tests / console

@@ -1,0 +1,167 @@
+# Book Reader: PDF → EPUB converter and reader
+
+Turns PDF books and articles into **EPUB 3** files that any e-book app can reflow, such as Google Play Books, ReadEra, Moon+ Reader, Kindle (via Send to Kindle), Calibre and Thorium.
+It is also a reader in its own right: a library, adjustable fonts, progress tracking, and notes that go to Google Keep or Obsidian.
+
+Everything runs **on your device and offline**: no server, no cloud, no AI tokens.
+
+| Where | How |
+|---|---|
+| Android | Installable web app (PWA). You can also share a PDF from any app to "Book Reader". |
+| Windows | The same PWA installed from Edge or Chrome ("Open with → Book Reader" works for `.pdf` files), **plus** a command-line batch converter. |
+
+---
+
+## Features by priority
+
+### P1: done and tested
+1. **PDF → EPUB 3.** Use the "PDF → EPUB" button in the app or `tools/pdf2epub.mjs`. The output passes the official epubcheck 5.2.1 validator with 0 errors and 0 warnings.
+   - Rebuilds paragraphs from PDF lines: joins wrapped lines, removes end-of-line hyphens and keeps bold and italic.
+   - Chapters and table of contents come from the PDF bookmarks, or from the headings it detects when there are none. There is one XHTML file per chapter.
+   - **Pictures** are cut from the page as JPEG, including vector charts. **Captions** become `<figcaption>`.
+   - **Tables** become real tables, with merged cells, header rows, and journal-style tables that only have horizontal rules.
+   - **Two-column articles** are read column by column.
+   - Running headers, footers and page numbers are removed from the text. The **original page numbers are kept** as EPUB page markers and a page list, so citations still match.
+   - Cover image, title, author and language. **Hebrew and Arabic** get right-to-left text, tables and page order.
+2. **Library** stored on the device. It skips duplicates and asks the browser not to delete it when storage is low.
+3. **Reader**
+   - Reflowed text with font, size, line spacing, width and theme controls (Light, Sepia, Dark, Black).
+   - The original page view is one tap away.
+   - Contents panel.
+   - It tracks **chapter, page and %** and resumes where you stopped.
+4. **Notes from selected text**
+   - On Android, the share sheet sends them to Google Keep.
+   - On Windows, the note is copied and keep.new opens.
+   - You can also append to an Obsidian note per book, copy as Markdown, or export all notes as `.md`. Notes are highlighted in the text.
+5. **App integration**
+   - Install it as an app, and it works offline.
+   - Windows file association.
+   - Android "share to app".
+   - Drag and drop on the desktop.
+
+### P2: next
+- **OCR for scanned PDFs**, built in (see [OCR](#ocr-scanned-pdfs)). Until then, scanned pages go into the EPUB as page pictures, with a warning.
+- Footnotes → EPUB pop-up notes.
+- Equations kept as images.
+- Tables without any lines, detected from text alignment.
+- Optional "fixed layout" EPUB for comics and magazines.
+- Read EPUB files in the app too.
+- Sync the library between phone and PC through a Google Drive or OneDrive folder.
+- Store packages through PWABuilder: an Android package for Google Play and an MSIX for the Microsoft Store.
+
+### P3: later
+Text-to-speech, full-text search, coloured highlights, dictionary lookup.
+
+---
+
+## Use it
+
+### 1. Run or host the app
+It is a static site, so any web host works. HTTPS is needed to install it, except on `localhost`.
+
+```bash
+# try locally (PC)
+npx serve .                 # or: python -m http.server 8080
+# open http://localhost:8080
+```
+
+To make it available on your phone, use **GitHub Pages** (free):
+1. Push this folder to a GitHub repo.
+2. In the repo, open **Settings → Pages → Source: GitHub Actions**. The included workflow `.github/workflows/pages.yml` publishes every push to `main`.
+3. Open the URL:
+   - **Android (Chrome):** menu ⋮ → *Install app*.
+   - **Windows (Edge or Chrome):** click the install icon in the address bar.
+
+Netlify, Cloudflare Pages or an internal IIS or nginx server work the same way: upload `index.html manifest.webmanifest sw.js css js icons vendor`.
+
+### 2. Convert
+- **In the app:** tap **PDF → EPUB**, pick one or more PDFs, then **Download EPUB** (or **Share** it straight into a reader app). Books you've already added have a **⤓ EPUB** button.
+- **Command line (Windows, batch):**
+  ```powershell
+  npm install
+  node tools\pdf2epub.mjs "C:\Books\book.pdf"
+  node tools\pdf2epub.mjs "C:\Books" -o "C:\Books\epub"     # every PDF in a folder
+  node tools\pdf2epub.mjs scan.pdf --lang he                # force the language
+  ```
+  It needs Node 20 or newer. `@napi-rs/canvas` ships prebuilt Windows binaries, so no compiler is required.
+
+On a phone, open the EPUB with ReadEra, Moon+ Reader, Lithium or Google Play Books (upload). On Windows, use Thorium Reader or Calibre, or Kindle through Send to Kindle, which accepts EPUB.
+
+### Reader keys (Windows)
+`T` contents · `N` notes · `A` text settings · `E` export EPUB · `O` original pages · `+`/`-` text size · `←`/`→` page · `Esc` library.
+
+---
+
+## OCR (scanned PDFs)
+
+A scanned PDF is only photos of pages, so there is no text to reflow. The converter detects this and keeps those pages as pictures. To get real text, add a text layer with **Tesseract**: a free, local OCR engine that supports Hebrew (`heb`) and English. It uses no AI tokens and no network.
+
+**Recommended now: OCRmyPDF on Windows, before converting.** It is the most accurate option, it can straighten and rotate pages, and you can run it in batches.
+
+```powershell
+winget install -e --id Python.Python.3.12
+winget install -e --id UB-Mannheim.TesseractOCR      # choose Hebrew under "Additional language data"
+winget install -e --id ArtifexSoftware.GhostScript
+pip install ocrmypdf
+ocrmypdf -l heb+eng --deskew --rotate-pages scanned.pdf scanned-ocr.pdf
+node tools\pdf2epub.mjs scanned-ocr.pdf
+```
+You can also use WSL (`sudo apt install ocrmypdf tesseract-ocr-heb`, then call it with `wsl ocrmypdf …`).
+The converter already handles OCR'd PDFs: it uses the hidden text layer and drops the page photo.
+
+**Planned in the app (P2): Tesseract.js**, the same engine compiled to WebAssembly.
+- It loads only when a book has pages without text.
+- Language data is a few MB per language, downloaded once and then cached for offline use.
+- It takes several seconds per page on a phone, so batch OCR on the PC is still better for whole books.
+
+**Options I don't recommend:**
+- Android's ML Kit text recognition doesn't read Hebrew script.
+- Sending pages to a cloud or LLM vision API costs tokens, needs the network, and sends your books off the device.
+
+---
+
+## Tech stack, and why
+
+- **Plain JavaScript (ES modules), no framework, no build step.**
+  - Deploying means copying files, and every file can be read on its own.
+  - It runs the same on Android and Windows, and wraps easily into store packages later (PWABuilder or Capacitor).
+- **pdf.js 6.2** (Mozilla) is vendored in `vendor/pdfjs`, including its fonts, CJK maps and the JPEG 2000 and JBIG2 decoders used in scanned books, so nothing is loaded from a CDN.
+- **IndexedDB** stores books and notes. A **service worker** provides offline use, installation and the Android share target.
+- The **EPUB writer and ZIP writer** are our own code and need no other libraries (zip uses the built-in `CompressionStream`). The same code runs in the browser and in Node.
+
+```
+index.html, manifest.webmanifest, sw.js      app shell, install, offline, share target
+css/app.css                                  themes and layout (phone first)
+js/app.js                                    routing, import, OS integrations
+js/library.js, js/reader.js                  views
+js/settings.js, js/ui.js, js/db.js           settings, DOM helpers, storage
+js/pdf/analyze.js   text items → lines → fragments, column gutter, vector/image operators
+js/pdf/regions.js   tables (ruled grids, horizontal-rule tables), pictures, vector figures
+js/pdf/layout.js    reading order (columns), paragraphs, headings, RTL rules
+js/pdf/extract.js   whole book: headers/footers, body size, image crops, TOC
+js/epub/epub.js     book model → EPUB 3 (OPF, nav, NCX, page list, chapters)
+js/epub/zip.js      ZIP writer      js/epub/export.js   app "Export EPUB"
+js/notes/*          notes and where they're sent (Keep, Obsidian, Markdown)
+tools/pdf2epub.mjs  command-line converter    tools/vendor-pdfjs.mjs  update pdf.js
+tests/*             extraction, EPUB and end-to-end browser tests
+samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew)
+```
+
+### Extending
+- **Another notes destination** (Notion, OneNote, email, your API): add an entry to `PROVIDERS` in `js/notes/providers.js`. It appears in Settings automatically.
+- **Another input format** (DOCX, HTML, EPUB): produce the same *book model* (`{blocks, toc, pages}`, documented at the top of `js/pdf/extract.js`). The reader and the EPUB export then work unchanged.
+- **Tuning the conversion:** all the heuristics are named constants in `analyze.js`, `regions.js` and `layout.js`. Add the problem PDF to `samples/` and an assertion to `tests/extract.test.mjs`.
+- **Updating pdf.js:** change the version in `package.json`, then run `npm install && npm run vendor`, and bump `VERSION` in `sw.js`.
+
+### Tests
+```bash
+npm install
+npm test                                   # extraction + EPUB structure (Node)
+EPUBCHECK=path/to/epubcheck.jar npm test   # + official EPUB validator
+python -m http.server 8080 &  python tests/e2e.py --shots shots/   # full browser test (Playwright)
+```
+
+### Known limits
+- Complex magazine layouts (three or more columns, text wrapped around pictures) may read out of order. The original page view is always there.
+- Footnotes currently stay where they are printed. Equations become plain text.
+- Tables without any lines read as paragraphs.

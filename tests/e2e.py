@@ -1,0 +1,261 @@
+"""End-to-end test in a real Chromium (Playwright).
+
+    python3 -m http.server 8080 &        # from the project root
+    python3 tests/e2e.py [--shots DIR] [--url http://localhost:8080/]
+
+Covers: import, reflow (headings/image/table/2 columns), settings, notes + highlight, resume position,
+original-page view, service worker (offline) and the Android share-target endpoint.
+"""
+import argparse
+import os
+import sys
+import time
+
+from playwright.sync_api import sync_playwright
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--url', default='http://localhost:8080/')
+ap.add_argument('--shots', default='')
+ap.add_argument('--chrome', default=os.environ.get('CHROME', '/usr/bin/google-chrome'))
+args = ap.parse_args()
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SAMPLE = os.path.join(ROOT, 'samples', 'sample-book.pdf')
+failed = []
+errors = []
+
+
+def check(name, cond):
+    print(('PASS ' if cond else 'FAIL ') + name)
+    if not cond:
+        failed.append(name)
+
+
+def bars(page):
+    # Scrolling down hides the bars (immersive reading); a tap brings them back.
+    page.evaluate("document.body.classList.remove('immersive')")
+    page.wait_for_timeout(250)
+
+
+def shot(page, name):
+    if args.shots:
+        os.makedirs(args.shots, exist_ok=True)
+        page.screenshot(path=os.path.join(args.shots, name + '.png'))
+
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(executable_path=args.chrome, args=['--no-sandbox'])
+    phone = dict(viewport={'width': 412, 'height': 860}, device_scale_factor=2, is_mobile=True, has_touch=True,
+                 user_agent='Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36')
+    ctx = browser.new_context(**phone)
+    ctx.grant_permissions(['clipboard-read', 'clipboard-write'], origin=args.url.rstrip('/'))
+    page = ctx.new_page()
+    page.on('console', lambda m: m.type == 'error' and errors.append(m.text))
+    page.on('pageerror', lambda e: errors.append(str(e)))
+
+    page.goto(args.url)
+    page.wait_for_selector('.lib-bar')
+    shot(page, '01-empty-library')
+
+    # Import
+    page.set_input_files('#pick-import', SAMPLE)
+    page.wait_for_selector('.card', timeout=60000)
+    check('book card appears', page.locator('.card').count() == 1)
+    check('title from PDF metadata', page.locator('.card .title').inner_text() == 'The Pocket Guide to Reading Software')
+    page.wait_for_timeout(300)
+    shot(page, '02-library')
+
+    # Open reader
+    page.locator('.card .cover').click()
+    page.wait_for_selector('.flow [data-b]')
+    page.wait_for_timeout(500)
+    check('chapter headings rendered', page.locator('.flow h3').count() >= 4)
+    check('table rendered as HTML', page.locator('.flow table tr').count() == 5)
+    check('table header row', page.locator('.flow table th').count() == 4)
+    shot(page, '03-reader-top')
+
+    page.locator('.flow figure.fig img').scroll_into_view_if_needed()
+    page.wait_for_function("() => { const i = document.querySelector('.flow figure.fig img'); return i && i.complete && i.naturalWidth > 100; }", timeout=10000)
+    check('figure image loaded', True)
+    page.evaluate("document.querySelector('.flow figure.fig').scrollIntoView({block:'center'})")
+    page.wait_for_timeout(400)
+    shot(page, '04-reader-figure')
+
+    page.evaluate("document.querySelector('.flow .tbl').scrollIntoView({block:'center'})")
+    page.wait_for_timeout(300)
+    shot(page, '05-reader-table')
+    page.locator('.tbl .snap-btn').click()
+    page.wait_for_function("() => { const i = document.querySelector('.tbl img.snap'); return i && i.complete && i.naturalWidth > 100; }", timeout=10000)
+    check('table original snapshot', True)
+    shot(page, '06-table-original')
+    page.locator('.tbl .snap-btn').click()
+
+    status = page.locator('.bar.bottom .status').inner_text()
+    chapter = page.locator('.titles .sub').inner_text()
+    check(f'status shows page ({status})', 'Page 3 of 4' in status)
+    check(f'chapter tracked ({chapter})', chapter.startswith('Chapter 3'))
+
+    # TOC
+    bars(page)
+    page.get_by_label('Contents').click()
+    page.wait_for_selector('.toc-item')
+    check('toc has 4 chapters', page.locator('.toc-item').count() == 4)
+    check('current chapter highlighted', 'Chapter 3' in page.locator('.toc-item.current').inner_text())
+    shot(page, '07-toc')
+    page.locator('.toc-item').nth(3).click()
+    page.wait_for_timeout(500)
+    check('jump to chapter 4', page.locator('.titles .sub').inner_text().startswith('Chapter 4'))
+    text = page.evaluate("[...document.querySelectorAll('.flow p')].map(p => p.textContent).join('\\n')")
+    check('two-column reading order', text.index('The left column ends here') < text.index('The right column starts here') < text.index('This is the last paragraph'))
+
+    # Settings: font, size, theme
+    bars(page)
+    page.get_by_label('Text settings').click()
+    page.get_by_role('button', name='Sans').click()
+    for _ in range(3):
+        page.get_by_label('Bigger').click()
+    page.get_by_role('button', name='Sepia').click()
+    shot(page, '08-settings')
+    page.keyboard.press('Escape')
+    page.wait_for_timeout(200)
+    size = page.evaluate("getComputedStyle(document.querySelector('.flow')).fontSize")
+    font = page.evaluate("getComputedStyle(document.querySelector('.flow')).fontFamily")
+    check(f'font size changed ({size})', size == '22px')
+    check('font family changed', 'system-ui' in font)
+    check('theme sepia', page.evaluate("document.documentElement.dataset.theme") == 'sepia')
+    shot(page, '09-sepia-sans-22')
+
+    # Note from a selection
+    page.evaluate("""() => {
+      const p = [...document.querySelectorAll('.flow p')].find(p => p.textContent.startsWith('Notes are saved together'));
+      p.scrollIntoView({block: 'center'});
+      const t = p.firstChild; const r = document.createRange();
+      r.setStart(t, 0); r.setEnd(t, 'Notes are saved together with the chapter and page'.length);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    }""")
+    page.wait_for_selector('.selbar:not([hidden])')
+    shot(page, '10-selection-bar')
+    page.locator('.selbar button', has_text='Note').click()
+    page.wait_for_selector('.sheet textarea')
+    page.locator('.sheet textarea').nth(1).fill('Good point about locations.')
+    page.locator('.sheet select').select_option('clipboard')
+    shot(page, '11-note-editor')
+    page.get_by_role('button', name='Save & send').click()
+    page.wait_for_timeout(400)
+    clip = page.evaluate('navigator.clipboard.readText()')
+    check('note sent as markdown', clip.startswith('> Notes are saved together with the chapter and page') and 'Chapter 4: Two-Column Articles · p. 4' in clip)
+    check('quote highlighted', page.locator('.flow mark.hl').count() == 1)
+    bars(page)
+    page.get_by_label('Notes').click()
+    page.wait_for_selector('.note')
+    check('note listed', page.locator('.note').count() == 1)
+    shot(page, '12-notes')
+    page.keyboard.press('Escape')
+
+    # Resume position after reload
+    page.evaluate("document.querySelector('.flow .tbl').scrollIntoView({block:'start'})")
+    page.wait_for_timeout(1300)  # throttle + debounced save
+    top_block = "(() => { const y = document.querySelector('.bar.top').getBoundingClientRect().bottom + 9; const el = [...document.querySelectorAll('.flow [data-b]')].find(n => n.getBoundingClientRect().bottom > y); return +el.dataset.b; })()"
+    before = page.evaluate(top_block)
+    page.reload()
+    page.wait_for_selector('.flow [data-b]')
+    page.wait_for_timeout(800)
+    after = page.evaluate(top_block)
+    check(f'position restored after reload (block {before} -> {after})', before == after)
+    check('resumed chapter', page.locator('.titles .sub').inner_text().startswith('Chapter 3'))
+
+    # Original pages
+    bars(page)
+    page.get_by_label('Toggle original pages').click()
+    page.wait_for_function("() => document.querySelectorAll('.page canvas').length >= 1", timeout=15000)
+    page.wait_for_timeout(500)
+    check('original page canvases render', page.locator('.page canvas').count() >= 1)
+    shot(page, '13-original-page')
+    bars(page)
+    page.get_by_label('Toggle original pages').click()
+    page.wait_for_timeout(300)
+
+    # Back to library: progress shown
+    bars(page)
+    page.get_by_label('Back to library').click()
+    page.wait_for_selector('.card')
+    where = page.locator('.card .where').inner_text()
+    check(f'library shows progress ({where})', 'p. 3/4' in where)
+    shot(page, '14-library-progress')
+
+    # Export EPUB from the library card (phone)
+    with page.expect_download() as dl:
+        page.locator('.epub-btn').click()
+        page.wait_for_selector('#epub-download', timeout=30000)
+        shot(page, '14b-epub-ready')
+        page.click('#epub-download')
+    epub_path = os.path.join(args.shots or '/tmp', 'phone-export.epub')
+    dl.value.save_as(epub_path)
+    with open(epub_path, 'rb') as fh:
+        head = fh.read(60)
+    check('exported EPUB is a zip with mimetype first', head[:2] == b'PK' and b'mimetypeapplication/epub+zip' in head)
+    if os.environ.get('EPUBCHECK'):
+        import subprocess
+        r = subprocess.run(['java', '-jar', os.environ['EPUBCHECK'], epub_path], capture_output=True, text=True)
+        check('app EPUB passes epubcheck', r.returncode == 0 and '0 errors' in r.stdout + r.stderr)
+
+    # Service worker + offline
+    page.wait_for_function('navigator.serviceWorker && navigator.serviceWorker.ready.then(() => true)')
+    page.reload()
+    page.wait_for_function('!!navigator.serviceWorker.controller', timeout=10000)
+    ctx.set_offline(True)
+    page.reload()
+    page.wait_for_selector('.card', timeout=10000)
+    page.locator('.card .cover').click()
+    page.wait_for_selector('.flow [data-b]')
+    check('works offline', page.locator('.flow h3').count() >= 4)
+    ctx.set_offline(False)
+
+    # Share target (what Android does when you share a PDF to the app)
+    page.goto(args.url)
+    page.wait_for_selector('.card')
+    with open(os.path.join(ROOT, 'samples', 'article-2col.pdf'), 'rb') as fh:
+        pdf2 = list(fh.read())
+    page.evaluate("""async (bytes) => {
+      const fd = new FormData();
+      fd.append('file', new File([new Uint8Array(bytes)], 'Shared Article.pdf', {type: 'application/pdf'}));
+      const r = await fetch('./share-target', {method: 'POST', body: fd, redirect: 'manual'});
+      return r.type;
+    }""", pdf2)
+    page.goto(args.url + '?shared=1#/inbox')  # Android opens the redirect target as a fresh page load
+    page.wait_for_selector('.flow [data-b]', timeout=30000)
+    check('shared PDF imported and opened', 'Shared' in page.locator('.titles .ttl').inner_text() or page.locator('.flow [data-b]').count() > 0)
+    page.goto(args.url)
+    page.wait_for_selector('.card')
+    check('library has 2 books', page.locator('.card').count() == 2)
+
+    # Desktop (Windows-size window)
+    desk = browser.new_context(viewport={'width': 1366, 'height': 860})
+    dp = desk.new_page()
+    dp.goto(args.url)
+    dp.wait_for_selector('.lib-bar')
+    dp.set_input_files('#pick-convert', SAMPLE)
+    # One-step PDF -> EPUB: the dialog offers the download
+    dp.wait_for_selector('#epub-download', timeout=60000)
+    shot(dp, '15-desktop-epub-ready')
+    with dp.expect_download() as dl:
+        dp.click('#epub-download')
+    dl.value.save_as(os.path.join(args.shots or '/tmp', 'desktop-convert.epub'))
+    check(f'quick convert downloads EPUB ({dl.value.suggested_filename})', dl.value.suggested_filename == 'The Pocket Guide to Reading Software.epub')
+    dp.wait_for_selector('.card')
+    shot(dp, '15b-desktop-library')
+    dp.locator('.card .cover').click()
+    dp.wait_for_selector('.flow [data-b]')
+    dp.evaluate("document.querySelector('.flow figure.fig').scrollIntoView({block:'center'})")
+    dp.wait_for_timeout(700)
+    shot(dp, '16-desktop-reader')
+    dp.keyboard.press('t')
+    dp.wait_for_selector('.toc-item')
+    dp.wait_for_timeout(200)
+    shot(dp, '17-desktop-toc')
+
+    browser.close()
+
+real_errors = [e for e in errors if 'favicon' not in e]
+check(f'no console errors {real_errors[:3]}', not real_errors)
+print(f'{len(failed)} FAILED: {failed}' if failed else 'ALL PASSED')
+sys.exit(1 if failed else 0)
