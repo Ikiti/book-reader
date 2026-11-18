@@ -1,5 +1,6 @@
 // OCR provider shared by the app and the command line: owns the Tesseract worker, picks the
 // language automatically (English / Hebrew / both) and turns each page into a page description.
+import { estimateSkew } from './skew.js';
 import { analyzeRaster } from './raster.js';
 import { ocrPage } from './page.js';
 
@@ -38,7 +39,8 @@ export const OCR_LANGS = { auto: 'Automatic (English / Hebrew)', eng: 'English',
  * @param {object} o
  * @param {Function} o.createWorker   Tesseract.createWorker
  * @param {object}   o.workerOptions  {langPath, corePath, workerPath, …}
- * @param {Function} o.render         async (pageNumber) => {image, rgba: {data,width,height}, scale}
+ * @param {Function} o.render         async (pageNumber, rotate = 0) => {image, rgba: {data,width,height}, scale,
+ *                                    erase(rects) → image with those pixel areas painted white}
  * @param {string}   [o.langs='auto'] 'auto' | 'eng' | 'heb' | 'eng+heb'
  */
 export function makeOcr({ createWorker, workerOptions, render, langs = 'auto' }) {
@@ -50,14 +52,27 @@ export function makeOcr({ createWorker, workerOptions, render, langs = 'auto' })
     get langs() { return current; },
     /** OCR one page; returns a page description for the layout engine. */
     async page(pageNumber, pageW, pageH) {
-      const r = await render(pageNumber);
+      let r = await render(pageNumber);
       // A designed page (cover, poster: mostly ink) stays a picture; no need to read it.
-      const raster = analyzeRaster(r.rgba);
+      let raster = analyzeRaster(r.rgba);
       if (raster.darkRatio > 0.4) return { w: pageW, h: pageH, frags: [], poster: true };
+      // A tilted scan is rendered again, turned straight (pictures are then cut from the straight page too).
+      const rotate = estimateSkew(r.rgba);
+      if (rotate) {
+        r = await render(pageNumber, rotate);
+        raster = analyzeRaster(r.rgba);
+      }
       if (!worker) worker = await createWorker(current.split('+'), 1, workerOptions);
       // Tell Tesseract the resolution (it otherwise guesses, and prints about it, for small areas).
       await worker.setParameters({ user_defined_dpi: String(Math.round(r.scale * 72)) });
-      const { data } = await worker.recognize(r.image, {}, { blocks: true, text: true });
+      // Table and frame lines are erased before OCR: Tesseract otherwise merges rows of a tight
+      // ruled table into one garbled line. (Their positions are kept in `raster` for the layout.)
+      const lines = [
+        ...raster.hRules.map((l) => ({ x0: l.x0 - 2, x1: l.x1 + 2, y0: l.y - l.t / 2 - 2, y1: l.y + l.t / 2 + 2 })),
+        ...raster.vRules.map((l) => ({ x0: l.x - l.t / 2 - 2, x1: l.x + l.t / 2 + 2, y0: l.y0 - 2, y1: l.y1 + 2 })),
+      ];
+      const image = lines.length && r.erase ? await r.erase(lines) : r.image;
+      const { data } = await worker.recognize(image, {}, { blocks: true, text: true });
       if (!decided) {
         // The first page with real text decides: drop the language that isn't there (faster, more accurate).
         const text = data.text || '';
@@ -73,8 +88,10 @@ export function makeOcr({ createWorker, workerOptions, render, langs = 'auto' })
           }
         }
       }
-      await secondPass(worker, r.image, data, raster);
-      return ocrPage(data, raster, r.scale, pageW, pageH);
+      await secondPass(worker, image, data, raster);
+      const pa = ocrPage(data, raster, r.scale, pageW, pageH);
+      if (rotate) pa.rotate = rotate;
+      return pa;
     },
     async close() { if (worker) await worker.terminate(); worker = null; },
   };

@@ -409,6 +409,23 @@ with sync_playwright() as p:
     check('OCR table rebuilt', op.locator('.flow table tr').count() >= 5 and 'Needs OCR' in op.locator('.flow table').text_content())
     check('OCR list items', op.locator('.flow li, .flow p.li').count() >= 3)
     shot(op, '23-ocr-reader')
+    # A tilted scan with a screenshot and a diagram: straightened, figures kept as pictures.
+    op.goto(args.url)
+    op.wait_for_selector('.lib-bar')
+    op.set_input_files('#pick-import', os.path.join(ROOT, 'samples', 'scanned-figures.pdf'))
+    t0 = time.time()
+    while time.time() - t0 < 120 and op.locator('.card').count() < 2:
+        op.wait_for_timeout(300)
+    op.locator('.card', has_text='scanned-figures').or_(op.locator('.card').first).first.locator('.cover').click()
+    op.wait_for_selector('.flow [data-b]')
+    flow = op.locator('.flow').text_content()
+    check('browser OCR: figures are pictures with captions', op.locator('.flow figure img').count() == 2 and 'Figure 2: High-level design' in flow)
+    check('browser OCR: no text from inside figures', 'Load balancer' not in flow and 'Corner Noodles' not in flow)
+    check('browser OCR: tilted paragraph whole', 'map and review apps. Figure 1 shows' in flow.replace('\n', ' '))
+    check('browser OCR: ruled table', 'Medium' in op.locator('.flow table').text_content())
+    op.locator('.flow figure').first.scroll_into_view_if_needed()
+    op.wait_for_timeout(300)
+    shot(op, '27-ocr-figures')
     oc.close()
 
     browser.close()

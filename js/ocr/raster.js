@@ -45,6 +45,7 @@ export function analyzeRaster(img) {
   const white = new Float32Array(GW * GH);
   const ink = new Float32Array(GW * GH);
   const color = new Float32Array(GW * GH);
+  const mean = new Float32Array(GW * GH);
   let darkCells = 0;
   for (let gy = 0; gy < GH; gy++) {
     for (let gx = 0; gx < GW; gx++) {
@@ -61,8 +62,21 @@ export function analyzeRaster(img) {
         }
       }
       const j = gy * GW + gx;
-      gray[j] = g / n; white[j] = w / n; ink[j] = k / n; color[j] = c / n;
+      gray[j] = g / n; white[j] = w / n; ink[j] = k / n; color[j] = c / n; mean[j] = sum / n;
       if (sum / n < 200) darkCells++;
+    }
+  }
+  // Anything visibly drawn on the paper (light grey lines, tints), relative to the paper's own
+  // shade (scans are rarely pure white): for the outline of figures.
+  const paper = [...mean].sort((a, b) => a - b)[Math.floor(mean.length * 0.6)];
+  const mark = new Float32Array(GW * GH);
+  for (let gy = 0; gy < GH; gy++) {
+    for (let gx = 0; gx < GW; gx++) {
+      let n = 0; let m = 0;
+      for (let y = gy * C; y < Math.min(H, gy * C + C); y++) {
+        for (let x = gx * C; x < Math.min(W, gx * C + C); x++) { n++; if (lum[y * W + x] < paper - 18) m++; }
+      }
+      mark[gy * GW + gx] = m / n;
     }
   }
 
@@ -106,7 +120,7 @@ export function analyzeRaster(img) {
       else if (!on && start >= 0) { if (x - start >= minH) hRuns.push({ y, x0: start, x1: x }); start = -1; }
     }
   }
-  const hRules = stackRuns(hRuns, 'y', 'x0', 'x1').filter((r) => r.t <= 5).map((r) => ({ x0: r.a, x1: r.b, y: r.pos }));
+  const hRules = stackRuns(hRuns, 'y', 'x0', 'x1').filter((r) => r.t <= 5).map((r) => ({ x0: r.a, x1: r.b, y: r.pos, t: r.t }));
   const minV = Math.max(40, H * 0.025);
   const vRuns = [];
   // Column lines get broken where row lines cross them (and by JPEG noise at row shading):
@@ -127,7 +141,7 @@ export function analyzeRaster(img) {
       }
     }
   }
-  const vRules = stackRuns(vRuns, 'x', 'y0', 'y1').filter((r) => r.t <= 5).map((r) => ({ y0: r.a, y1: r.b, x: r.pos }));
+  const vRules = stackRuns(vRuns, 'x', 'y0', 'y1').filter((r) => r.t <= 5).map((r) => ({ y0: r.a, y1: r.b, x: r.pos, t: r.t }));
 
   return {
     W, H, C, GW, GH, ink, color, boxes, hRules, vRules,
@@ -165,6 +179,18 @@ export function analyzeRaster(img) {
       const comps = this.pictures(wordBoxes, 0, 0, true);
       const lines = comps.filter((b) => { const h = b.y1 - b.y0; const w = b.x1 - b.x0; return h >= 12 && h <= H * 0.08 && w >= 1.5 * h && b.n / b.cells >= 0.12; });
       return { lines };
+    },
+    /** Bounding box (pixels) of everything drawn inside an area, or null if it's blank. */
+    inkBox(x0, y0, x1, y1) {
+      let bx0 = Infinity; let by0 = Infinity; let bx1 = -1; let by1 = -1;
+      for (let gy = Math.max(0, Math.floor(y0 / C)); gy < Math.min(GH, Math.ceil(y1 / C)); gy++) {
+        for (let gx = Math.max(0, Math.floor(x0 / C)); gx < Math.min(GW, Math.ceil(x1 / C)); gx++) {
+          const j = gy * GW + gx;
+          if (ink[j] < 0.02 && color[j] < 0.05 && mark[j] < 0.08) continue;
+          if (gx < bx0) bx0 = gx; if (gx > bx1) bx1 = gx; if (gy < by0) by0 = gy; if (gy > by1) by1 = gy;
+        }
+      }
+      return bx1 < 0 ? null : { x0: bx0 * C, y0: by0 * C, x1: (bx1 + 1) * C, y1: (by1 + 1) * C };
     },
     /** Pictures: inked cells not explained by text, boxes or rules (call after OCR). */
     pictures(wordBoxes, minW, minH2, all = false) {

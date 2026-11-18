@@ -1,4 +1,5 @@
 // Browser-side pdf.js setup plus page rendering helpers (crops, cover, original-page view).
+import { rotationTransform } from '../ocr/skew.js';
 import * as pdfjsLib from '../../vendor/pdfjs/pdf.min.mjs';
 import { extractBook } from './extract.js';
 
@@ -30,25 +31,27 @@ const canvasToBlob = (canvas, type = 'image/jpeg', q = 0.9) =>
   new Promise((resolve) => canvas.toBlob((b) => resolve(b), type, q));
 
 /** Render a page to a canvas at `scale` (CSS px per PDF pt). */
-export async function renderPage(page, scale, canvas = document.createElement('canvas')) {
+export async function renderPage(page, scale, canvas = document.createElement('canvas'), rotate = 0) {
   const vp = page.getViewport({ scale });
   canvas.width = Math.ceil(vp.width);
   canvas.height = Math.ceil(vp.height);
   const ctx = canvas.getContext('2d', { alpha: false });
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvas, canvasContext: ctx, viewport: vp }).promise;
+  // rotate: straighten a tilted scan (degrees), see ocr/skew.js
+  const transform = rotate ? rotationTransform(canvas.width, canvas.height, rotate) : undefined;
+  await page.render({ canvas, canvasContext: ctx, viewport: vp, transform }).promise;
   return canvas;
 }
 
 /** Make a cropper for extractBook: renders the page once and cuts out each rect. */
 function makeCropper(pdf) {
-  return async (pageNumber, rects) => {
+  return async (pageNumber, rects, rotate = 0) => {
     const page = await pdf.getPage(pageNumber);
     const vp1 = page.getViewport({ scale: 1 });
     // ~2x for sharp figures, capped so huge pages don't blow up memory.
     const scale = Math.min(2.5, 2800 / Math.max(vp1.width, vp1.height));
-    const canvas = await renderPage(page, scale);
+    const canvas = await renderPage(page, scale, undefined, rotate);
     const out = [];
     for (const r of rects) {
       const x = Math.max(0, Math.floor(r.x0 * scale));
@@ -103,14 +106,20 @@ function browserOcr(pdf, langs) {
         cacheMethod: 'none', // the service worker caches the files instead
         workerBlobURL: false,
       },
-      render: async (pageNumber) => {
+      render: async (pageNumber, rotate = 0) => {
         const page = await pdf.getPage(pageNumber);
         const vp1 = page.getViewport({ scale: 1 });
         const scale = Math.min(3.5, 2000 / vp1.width); // ~240 dpi for A4: enough for small print and code
-        const canvas = await renderPage(page, scale);
-        const rgba = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+        const canvas = await renderPage(page, scale, undefined, rotate);
+        const ctx = canvas.getContext('2d');
+        const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height);
         page.cleanup();
-        return { image: canvas, rgba, scale };
+        const erase = async (rects) => {
+          ctx.fillStyle = '#fff';
+          for (const q of rects) ctx.fillRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
+          return canvas;
+        };
+        return { image: canvas, rgba, scale, erase };
       },
     });
   };

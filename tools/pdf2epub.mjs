@@ -15,6 +15,7 @@ import { extractBook } from '../js/pdf/extract.js';
 import { buildEpub } from '../js/epub/epub.js';
 import { cleanTitle, safeFileName } from '../js/pdf/title.js';
 import { nodeOcr } from './node-ocr.mjs';
+import { rotationTransform } from '../js/ocr/skew.js';
 
 const require = createRequire(import.meta.url);
 const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -42,13 +43,14 @@ function parseArgs(argv) {
   return o;
 }
 
-async function render(page, scale) {
+async function render(page, scale, rotate = 0) {
   const vp = page.getViewport({ scale });
   const canvas = createCanvas(Math.ceil(vp.width), Math.ceil(vp.height));
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+  const transform = rotate ? rotationTransform(canvas.width, canvas.height, rotate) : undefined; // straighten a tilted scan
+  await page.render({ canvasContext: ctx, viewport: vp, canvas, transform }).promise;
   return canvas;
 }
 
@@ -70,11 +72,11 @@ async function convert(file, opts) {
   });
   const pdf = await task.promise;
   try {
-    const cropper = async (pageNumber, rects) => {
+    const cropper = async (pageNumber, rects, rotate = 0) => {
       const page = await pdf.getPage(pageNumber);
       const vp1 = page.getViewport({ scale: 1 });
       const scale = Math.min(2.5, 2800 / Math.max(vp1.width, vp1.height));
-      const canvas = await render(page, scale);
+      const canvas = await render(page, scale, rotate);
       const out = [];
       for (const r of rects) {
         const x = Math.max(0, Math.floor(r.x0 * scale));

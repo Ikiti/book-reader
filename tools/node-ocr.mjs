@@ -9,7 +9,7 @@ const LANG_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '
 /**
  * @param pdf     pdf.js document
  * @param langs   'auto' | 'eng' | 'heb' | 'eng+heb'
- * @param render  async (page, scale) => @napi-rs/canvas Canvas
+ * @param render  async (page, scale, rotate) => @napi-rs/canvas Canvas (rotate: degrees to straighten)
  */
 export function nodeOcr(pdf, langs, render) {
   let inner = null;
@@ -19,14 +19,20 @@ export function nodeOcr(pdf, langs, render) {
       createWorker,
       langs,
       workerOptions: { langPath: LANG_DIR, cacheMethod: 'none', gzip: true },
-      render: async (pageNumber) => {
+      render: async (pageNumber, rotate = 0) => {
         const page = await pdf.getPage(pageNumber);
         const vp1 = page.getViewport({ scale: 1 });
         const scale = Math.min(3.5, 2000 / vp1.width); // ~240 dpi for A4: good for small print and code
-        const canvas = await render(page, scale);
-        const rgba = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+        const canvas = await render(page, scale, rotate);
+        const ctx = canvas.getContext('2d');
+        const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height);
         page.cleanup();
-        return { image: await canvas.encode('png'), rgba, scale };
+        const erase = async (rects) => {
+          ctx.fillStyle = '#fff';
+          for (const q of rects) ctx.fillRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
+          return canvas.encode('png');
+        };
+        return { image: await canvas.encode('png'), rgba, scale, erase };
       },
     });
   };

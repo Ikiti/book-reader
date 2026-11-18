@@ -132,6 +132,9 @@ Some PDFs are only pictures of pages (scans, or pages exported as images), so th
 - **Language:** *Automatic* reads the first page with real text and picks English, Hebrew or both. You can force it: Library → ⚙ → *Scanned / picture-only PDF pages*, or `--ocr eng|heb|eng+heb|off` on the command line.
 - **First use:** about 7 MB (engine + language data) downloads once; the service worker keeps it for offline use.
 - **Speed:** about 2–3 s per page on a PC, more on a phone. A converted book is saved, so it's a one-time cost.
+- **Tilted scans** are measured and turned straight before reading (otherwise the end of one line gets mixed into the next).
+- **Figures** — screenshots, diagrams, maps, charts — stay pictures: the area between a *Figure N* caption and the text around it, and pictures with small or unreadable text next to them, are kept as one image instead of being read as scraps of text. Text that's just hard to read (paths, code) stays text.
+- **Ruled tables:** the lines are erased before OCR (Tesseract otherwise merges tight rows), then the table is rebuilt from their positions.
 - **Accuracy:** good on clean scans and exported pages. OCR can still misread single letters (`l`/`I`, `0`/`O`), especially in code. The import message says how many pages were read with OCR.
 
 ```powershell
@@ -172,14 +175,15 @@ js/epub/epub.js     book model → EPUB 3 (OPF, nav, NCX, page list, chapters)
 js/epub/import.js   EPUB 2/3 → book model (reading EPUBs)    js/epub/load.js  browser glue
 js/epub/zip.js, unzip.js   ZIP writer/reader       js/epub/export.js   app "Export EPUB"
 js/ocr/raster.js    page picture analysis: shaded boxes, table lines, pictures, stroke weight
-js/ocr/page.js      OCR words → the same fragments as a text PDF (code, bullets, bold, tables)
-js/ocr/provider.js  Tesseract worker, language choice, second pass for missed lines
+js/ocr/page.js      OCR words → the same fragments as a text PDF (code, bullets, bold, tables, figures)
+js/ocr/provider.js  Tesseract worker, language choice, straightening, second pass for missed lines
+js/ocr/skew.js      measures a scan's tilt (projection profile)
 js/progress.js      reading progress: what's read (block ranges), chapters, speed, re-process remap
 js/notes/*          notes and where they're sent (Keep, Obsidian, Markdown)
 tools/pdf2epub.mjs  command-line converter    tools/node-ocr.mjs  OCR in Node
 tools/vendor.mjs    copies pdf.js and Tesseract into vendor/ (npm run vendor)
 tests/*             extraction, EPUB and end-to-end browser tests
-samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew, tech book, scanned copy)
+samples/*           test PDFs (4-page book, LaTeX two-column paper, Hebrew, tech book, scanned copy, tilted scan with figures)
 ```
 
 ### Extending

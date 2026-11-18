@@ -1,6 +1,6 @@
 // Service worker: offline app shell + Android share target.
 // Bump VERSION when you deploy changes so clients pick up the new files.
-const VERSION = 'br-v6';
+const VERSION = 'br-v7';
 const SHELL = [
   './',
   './index.html',
@@ -31,6 +31,7 @@ const SHELL = [
   './js/ocr/provider.js',
   './js/ocr/raster.js',
   './js/ocr/page.js',
+  './js/ocr/skew.js',
   './vendor/tesseract/tesseract.esm.min.js',
   './vendor/tesseract/worker.min.js',
   './vendor/pdfjs/pdf.min.mjs',

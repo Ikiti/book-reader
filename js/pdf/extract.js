@@ -19,7 +19,7 @@ import { findRegions } from './regions.js';
 import { buildBlocks, orderPage, PAGE_REF } from './layout.js';
 import { weightedMode } from './geometry.js';
 
-export const EXTRACT_VERSION = 3; // 3: OCR for picture-only pages
+export const EXTRACT_VERSION = 4; // 3: OCR for picture-only pages; 4: tilted scans, figures with text
 
 const PAGE_NUM = /^(page\s*)?#(\s*(of|\/)\s*#)?$|^[-–—]\s*#\s*[-–—]$|^[ivxlcdm]+$/i;
 const textOf = (b) => (b.runs ? b.runs.map((r) => r.s).join('') : '');
@@ -28,7 +28,8 @@ const textOf = (b) => (b.runs ? b.runs.map((r) => r.s).join('') : '');
  * @param {object} pdfjs  pdf.js module
  * @param {object} pdf    PDFDocumentProxy
  * @param {object} opts
- *   cropper(pageNumber, rects) -> Promise<(Blob|Uint8Array)[]>   renders a page and crops rects
+ *   cropper(pageNumber, rects, rotate) -> Promise<(Blob|Uint8Array)[]>   renders a page (turned by
+ *     -rotate degrees: a straightened scan) and crops rects
  *   ocr      {page(pageNumber, w, h) -> page description}  for pages that are only a picture (optional)
  *   onProgress(done, total, phase)   phase: 'analyze' | 'ocr' | 'images'
  */
@@ -101,7 +102,7 @@ export async function extractBook(pdfjs, pdf, { cropper, ocr, onProgress } = {})
     });
     let blobs = [];
     if (cropper) {
-      try { blobs = await cropper(pg + 1, rects); } catch (err) { console.warn('crop failed', pg, err); }
+      try { blobs = await cropper(pg + 1, rects, raw[pg].rotate || 0); } catch (err) { console.warn('crop failed', pg, err); }
     }
     list.forEach((b, i) => {
       b.w = Math.round(b.rect.x1 - b.rect.x0);

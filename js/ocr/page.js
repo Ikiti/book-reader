@@ -48,7 +48,15 @@ export function ocrPage(data, raster, scale, pageW, pageH) {
     const g = sizes[sizes.length - 1];
     if (g && v <= g.min * 1.1) { g.list.push(v); } else sizes.push({ min: v, list: [v] });
   }
-  const snap = (v) => { const g = sizes.find((x) => v >= x.min && v <= x.min * 1.1); return g ? g.list[g.list.length >> 1] : v; };
+  // The running text's size (by amount of text): lines within ±14% of it are running text too
+  // (headings are bigger than that, footnotes and captions smaller).
+  const weighted = lines.map(({ words }, li) => [rawFs[li], words.reduce((n, w) => n + w.text.length, 0)]).filter(([, n]) => n >= 20).sort((x, y) => x[0] - y[0]);
+  let acc = 0;
+  const half = weighted.reduce((n, [, c]) => n + c, 0) / 2;
+  const bodyRaw = weighted.find(([, c]) => (acc += c) >= half)?.[0];
+  const groupOf = (v) => { const g = sizes.find((x) => v >= x.min && v <= x.min * 1.1); return g ? g.list[g.list.length >> 1] : v; };
+  const bodyFs = bodyRaw ? groupOf(bodyRaw) : 0;
+  const snap = (v) => (bodyFs && Math.abs(v - bodyFs) <= 0.14 * bodyFs ? bodyFs : groupOf(v));
 
   // Stroke thickness per word, relative to the (snapped) text size → bold. Thickness doesn't depend
   // on which letters a word has, unlike ink density (capitals, short words).
@@ -60,8 +68,31 @@ export function ocrPage(data, raster, scale, pageW, pageH) {
   dens.sort((a, b) => a - b);
   const medInk = dens[dens.length >> 1] || 0.1;
 
+  // Figures with text in them (screenshots, diagrams, maps): one picture, not OCR'd scraps.
+  const allWordBoxes = lines.flatMap((l) => l.words.map((w) => w.bbox));
+  const pics = raster.pictures(allWordBoxes, 50 * scale, 35 * scale);
+  const figs = findFigures(lines.map(({ line, words }, li) => {
+    const chars = words.reduce((n, w) => n + w.text.length, 0);
+    let gap = 0; // widest space between words, in text heights (labels of a diagram sit far apart)
+    for (let k = 1; k < words.length; k++) gap = Math.max(gap, (words[k].bbox.x0 - words[k - 1].bbox.x1) / (snap(rawFs[li]) * scale));
+    return {
+      ...line.bbox, fs: snap(rawFs[li]), chars, gap, text: words.map((w) => w.text).join(' '),
+      conf: words.reduce((n, w) => n + w.confidence * w.text.length, 0) / Math.max(1, chars),
+      boxed: !!inBox(line.bbox),
+    };
+  }), pics, raster, scale);
+  const inFig = (b) => { const cx = (b.x0 + b.x1) / 2; const cy = (b.y0 + b.y1) / 2; return figs.some((f) => cx >= f.x0 && cx <= f.x1 && cy >= f.y0 && cy <= f.y1); };
+  if (globalThis.process?.env?.DBG_LINES) {
+    for (const [li, { line, words }] of lines.entries()) {
+      const conf = words.reduce((n, w) => n + w.confidence, 0) / words.length;
+      console.log(`${inFig(line.bbox) ? 'F' : ' '} ${pt(line.bbox.x0).toFixed(0).padStart(4)} ${pt(line.bbox.y0).toFixed(0).padStart(4)} ${pt(line.bbox.x1).toFixed(0).padStart(4)} ${pt(line.bbox.y1).toFixed(0).padStart(4)} fs ${snap(rawFs[li]).toFixed(1).padStart(4)} conf ${conf.toFixed(0).padStart(3)} | ${words.map((w) => w.text).join(' ').slice(0, 70)}`);
+    }
+    console.log('figures', figs.map((f) => [pt(f.x0), pt(f.y0), pt(f.x1), pt(f.y1)].map(Math.round)));
+  }
+
   const items = [];
   for (const [li, { line, words }] of lines.entries()) {
+    if (inFig(line.bbox)) continue;
     const fs = snap(rawFs[li]);
     const bl = line.baseline || { x0: line.bbox.x0, y0: line.bbox.y1, x1: line.bbox.x1, y1: line.bbox.y1 };
     const baseAt = (x) => (bl.x1 === bl.x0 ? bl.y0 : bl.y0 + ((bl.y1 - bl.y0) * (x - bl.x0)) / (bl.x1 - bl.x0));
@@ -77,7 +108,7 @@ export function ocrPage(data, raster, scale, pageW, pageH) {
     // (A dot, then white paper before the text — not a dark bar or a table border.)
     let dot = 0; // densest small window in the gutter (bullets sit 0.4–2 line heights before the text)
     for (let a = 0.35; a <= 1.75; a += 0.1) dot = Math.max(dot, raster.inkIn(x0 - (a + 0.45) * h, ym - 0.3 * h, x0 - a * h, ym + 0.3 * h));
-    if (!mono && !BULLET_LIKE.test(words[0].text.trim()) && dot > 0.12 && dot < 0.6
+    if (!mono && text.length >= 3 && !/^[\d\s|.-]+$/.test(text) && !BULLET_LIKE.test(words[0].text.trim()) && dot > 0.12 && dot < 0.6
       && raster.inkIn(x0 - 0.3 * h, ym - 0.45 * h, x0 - 0.05 * h, ym + 0.45 * h) < 0.03
       && raster.inkIn(x0 - 2.2 * h, ym - 1.3 * h, x0 - 0.35 * h, ym - 0.6 * h) < 0.03 // not a bar running down the side
       && raster.inkIn(x0 - 2.2 * h, ym + 0.6 * h, x0 - 0.35 * h, ym + 1.3 * h) < 0.03
@@ -108,16 +139,118 @@ export function ocrPage(data, raster, scale, pageW, pageH) {
     ? (Math.abs(r.y - b.y0) < 6 || Math.abs(r.y - b.y1) < 6) && r.x0 >= b.x0 - 8 && r.x1 <= b.x1 + 8
     : (Math.abs(r.x - b.x0) < 6 || Math.abs(r.x - b.x1) < 6) && r.y0 >= b.y0 - 8 && r.y1 <= b.y1 + 8));
   const segments = [
-    ...raster.hRules.filter((r) => !onBoxEdge(r, true)).map((r) => ({ kind: 'h', x0: pt(r.x0), x1: pt(r.x1), y: pt(r.y) })),
-    ...raster.vRules.filter((r) => !onBoxEdge(r, false)).map((r) => ({ kind: 'v', y0: pt(r.y0), y1: pt(r.y1), x: pt(r.x) })),
+    ...raster.hRules.filter((r) => !onBoxEdge(r, true) && !inFig({ x0: r.x0, x1: r.x1, y0: r.y, y1: r.y })).map((r) => ({ kind: 'h', x0: pt(r.x0), x1: pt(r.x1), y: pt(r.y) })),
+    ...raster.vRules.filter((r) => !onBoxEdge(r, false) && !inFig({ x0: r.x, x1: r.x, y0: r.y0, y1: r.y1 })).map((r) => ({ kind: 'v', y0: pt(r.y0), y1: pt(r.y1), x: pt(r.x) })),
   ];
-  const tables = ocrTables(frags, raster, scale);
+  const tables = ocrTables(frags, raster, scale).filter((t) => !inFig({ x0: t.x0 * scale, x1: t.x1 * scale, y0: t.y0 * scale, y1: t.y1 * scale }));
   // Rules that belong to a detected table are used up.
   const inTable = (sg) => tables.some((t) => (sg.kind === 'h' ? sg.y : (sg.y0 + sg.y1) / 2) >= t.y0 - 2 && (sg.kind === 'h' ? sg.y : (sg.y0 + sg.y1) / 2) <= t.y1 + 2
     && (sg.kind === 'v' ? sg.x : (sg.x0 + sg.x1) / 2) >= t.x0 - 2 && (sg.kind === 'v' ? sg.x : (sg.x0 + sg.x1) / 2) <= t.x1 + 2);
-  const wordBoxes = lines.flatMap((l) => l.words.map((w) => w.bbox));
-  const images = raster.pictures(wordBoxes, 50 * scale, 35 * scale).map((r) => ({ x0: pt(r.x0), y0: pt(r.y0), x1: pt(r.x1), y1: pt(r.y1) }));
+  const images = [...figs, ...pics.filter((r) => !inFig(r))].map((r) => ({ x0: pt(r.x0), y0: pt(r.y0), x1: pt(r.x1), y1: pt(r.y1) }));
   return { w: pageW, h: pageH, frags, gutter: frags.gutter, gutterInfo: frags.gutterInfo, segments: segments.filter((sg) => !inTable(sg)), shapes: [], images, tables, ocr: true };
+}
+
+// "Figure 1.1: …", "Fig. 3", "איור 2" — not "Table" (tables are rebuilt as text) or "Listing" (code).
+const FIG_CAPTION = /^(fig(ure)?|chart|diagram|illustration|image|exhibit|plate|איור)\.?\s*[\dIVX]+([.\-–:]\d+)*\s*([:.\-—–]|$|\s)/i;
+
+/**
+ * Areas that are pictures even though OCR found "text" in them: screenshots, diagrams, maps,
+ * charts. Two signs: a "Figure N" caption (everything between it and the running text above —
+ * or below — is the figure), and pictures with small or unreadable (low-confidence) text around
+ * them. Returns boxes in pixels; text inside them is dropped.
+ * @param L     lines: {x0, y0, x1, y1 (px), fs (pt), conf, chars, gap, text, boxed}
+ * @param pics  picture boxes found in the raster (px)
+ */
+function findFigures(L, pics, raster, scale) {
+  const prose = L.filter((l) => l.conf >= 80 && l.chars >= 20);
+  if (prose.length < 2) return [];
+  // The running text: its size, margins and width.
+  const bySize = prose.map((l) => [l.fs, l.chars]).sort((a, b) => a[0] - b[0]);
+  let acc = 0;
+  const half = bySize.reduce((n, [, c]) => n + c, 0) / 2;
+  const bodyFs = bySize.find(([, c]) => (acc += c) >= half)[0];
+  const sameSize = (l) => Math.abs(l.fs - bodyFs) <= 0.2 * bodyFs;
+  const body = prose.filter(sameSize);
+  if (!body.length) return [];
+  const lefts = body.map((l) => l.x0).sort((a, b) => a - b);
+  const rights = body.map((l) => l.x1).sort((a, b) => a - b);
+  const bodyLeft = lefts[lefts.length >> 1];
+  const bodyRight = rights[Math.floor(rights.length * 0.9)];
+  const colW = Math.max(1, bodyRight - bodyLeft);
+  const fsPx = bodyFs * scale;
+  const atMargin = (l) => Math.abs(l.x0 - bodyLeft) < 2.5 * fsPx;
+  const isCaption = (l) => l.conf >= 60 && FIG_CAPTION.test(l.text.trim());
+  const sorted = [...L].sort((a, b) => a.y0 - b.y0);
+  for (const l of sorted) l.body = l.conf >= 75 && sameSize(l) && atMargin(l) && l.gap < 2.5 && (l.x1 - l.x0 >= 0.6 * colW || l.chars >= 40);
+  // The short last line of a paragraph is running text too.
+  for (const l of sorted) {
+    if (!l.body && l.conf >= 75 && sameSize(l) && atMargin(l) && l.gap < 2.5) l.body = sorted.some((p) => p.body && p !== l && l.y0 - p.y1 > -0.4 * fsPx && l.y0 - p.y1 < 0.9 * fsPx);
+  }
+  for (const l of sorted) {
+    l.heading = !l.body && l.conf >= 80 && l.fs >= 1.15 * bodyFs && atMargin(l);
+    l.code = l.boxed && l.conf >= 80 && l.fs >= 0.75 * bodyFs; // a code box is text, not a figure (small labels on a shaded map are)
+  }
+  for (const l of sorted) {
+    // Lines starting at the same place as others of their size: a list or code (paths and code
+    // are hard to OCR, so low confidence alone doesn't make them part of a picture).
+    const aligned = sorted.filter((o) => o !== l && Math.abs(o.x0 - l.x0) < 0.6 * fsPx && Math.abs(o.fs - l.fs) <= 0.15 * l.fs).length >= 2;
+    // Text that is probably part of a picture: much smaller than the running text, or unreadable.
+    l.loose = !l.body && !l.heading && !l.boxed && !isCaption(l)
+      && (l.fs < 0.85 * bodyFs || (l.conf < 75 && !aligned) || l.conf < 30);
+  }
+  const H = raster.H;
+  const margin = 0.06 * H; // running header / footer zone
+  const xa = Math.max(0, bodyLeft - 3 * fsPx);
+  const xb = Math.min(raster.W, bodyRight + 3 * fsPx);
+  const figs = [];
+  const area = (b) => Math.max(0, b.x1 - b.x0) * Math.max(0, b.y1 - b.y0);
+  const overlap = (a, b) => area({ x0: Math.max(a.x0, b.x0), y0: Math.max(a.y0, b.y0), x1: Math.min(a.x1, b.x1), y1: Math.min(a.y1, b.y1) });
+
+  // 1. A "Figure N" caption: the figure is between it and the running text (above it, else below).
+  for (const c of sorted.filter(isCaption)) {
+    const stops = (e) => e.body || e.heading || e.code || isCaption(e);
+    const band = (up) => {
+      const els = up ? sorted.filter((l) => l !== c && l.y1 <= c.y0 + 0.3 * fsPx).reverse() : sorted.filter((l) => l !== c && l.y0 >= c.y1 - 0.3 * fsPx);
+      const stop = els.find(stops);
+      const y0 = up ? (stop ? stop.y1 + 0.15 * fsPx : margin) : c.y1 + 0.15 * fsPx;
+      const y1 = up ? c.y0 - 0.15 * fsPx : (stop ? stop.y0 - 0.15 * fsPx : H - margin);
+      if (y1 - y0 < 2.5 * fsPx) return null;
+      return raster.inkBox(xa, y0, xb, y1);
+    };
+    const box = band(true) || band(false);
+    if (box && box.y1 - box.y0 >= 2 * fsPx && box.x1 - box.x0 >= 0.15 * colW) figs.push(box);
+  }
+
+  // 2. Pictures pull in the small / unreadable text around them (and nearby pictures). Text with
+  // no picture near it stays text, however badly it was read.
+  const d = 1.5 * fsPx;
+  const near = (a, b) => a.x0 - d < b.x1 && b.x0 - d < a.x1 && a.y0 - d < b.y1 && b.y0 - d < a.y1;
+  const loose = sorted.filter((l) => l.loose);
+  for (const seed of pics.map((p) => ({ ...p, text: 0 }))) {
+    const r = { ...seed };
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const l of loose) {
+        if (l.used || !near(r, l)) continue;
+        l.used = true; r.text++; grew = true;
+        r.x0 = Math.min(r.x0, l.x0); r.y0 = Math.min(r.y0, l.y0); r.x1 = Math.max(r.x1, l.x1); r.y1 = Math.max(r.y1, l.y1);
+      }
+      for (const p of pics) {
+        if (p === seed || (p.x0 >= r.x0 && p.x1 <= r.x1 && p.y0 >= r.y0 && p.y1 <= r.y1) || !near(r, p)) continue;
+        r.x0 = Math.min(r.x0, p.x0); r.y0 = Math.min(r.y0, p.y0); r.x1 = Math.max(r.x1, p.x1); r.y1 = Math.max(r.y1, p.y1); grew = true;
+      }
+    }
+    if (r.text >= 2) figs.push(raster.inkBox(r.x0 - 0.5 * fsPx, r.y0 - 0.5 * fsPx, r.x1 + 0.5 * fsPx, r.y1 + 0.5 * fsPx) || r);
+  }
+
+  // Overlapping boxes become one figure.
+  const out = [];
+  for (const f of figs.sort((a, b) => area(b) - area(a))) {
+    const m = out.find((o) => overlap(o, f) > 0.1 * Math.min(area(o), area(f)));
+    if (m) { m.x0 = Math.min(m.x0, f.x0); m.y0 = Math.min(m.y0, f.y0); m.x1 = Math.max(m.x1, f.x1); m.y1 = Math.max(m.y1, f.y1); } else out.push({ x0: f.x0, y0: f.y0, x1: f.x1, y1: f.y1 });
+  }
+  // Running text never ends up inside a figure: trim a figure that reached into it.
+  return out.filter((f) => !sorted.some((l) => (l.body || l.heading) && overlap(l, f) > 0.5 * area(l)));
 }
 
 /**
