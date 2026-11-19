@@ -22,6 +22,7 @@ export const DEFAULTS = {
   noteProvider: 'auto',
   obsidianVault: '',
   obsidianFolder: 'Book Notes',
+  keepTipSeen: false, // the "paste into Keep" explanation was read
   ocrLang: 'auto', // picture-only PDF pages: 'auto' | 'eng' | 'heb' | 'eng+heb' | 'off'
 };
 

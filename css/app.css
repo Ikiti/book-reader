@@ -216,6 +216,21 @@ label.row select { flex: 1; }
 .backchip .back-go { font-weight: 600; padding: .3em .4em .3em .9em; }
 body.immersive .backchip { bottom: calc(14px + env(safe-area-inset-bottom)); }
 .note { border-bottom: 1px solid var(--border); padding: .7rem 0; }
+.note.last { border-left: 3px solid var(--accent); padding-left: .6rem; }
+.note-open { all: unset; cursor: pointer; display: block; width: 100%; }
+.note-open:hover blockquote, .note-open:hover p { color: var(--accent); }
+.note-editor .quotes { display: flex; flex-direction: column; gap: .4rem; }
+.note-editor .clip-meta { display: flex; justify-content: space-between; align-items: center; min-height: 30px; }
+.note-editor .clip-meta .icon { min-height: 28px; min-width: 32px; padding: 0; }
+.note-editor textarea.comment { min-height: 6em; }
+.save-state.ok { color: var(--accent); font-weight: 600; }
+.send-row { display: flex; gap: .4rem; }
+.send-row select { flex: 1; }
+.form .steps { margin: .2rem 0; padding-left: 1.3rem; }
+.form .steps li { margin: .25rem 0; }
+.form pre.preview { white-space: pre-wrap; max-height: 9em; overflow: auto; font: .85rem/1.4 var(--read-font); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .5rem .7rem; margin: 0; }
+kbd { font: 600 .85em var(--ui-font); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; padding: .05em .4em; background: var(--card); }
+.selbar button[hidden] { display: none; }
 .note blockquote { margin: 0 0 .4rem; padding-left: .7rem; border-left: 3px solid var(--hl); font-family: var(--read-font); font-style: italic; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
 .note p { margin: .2rem 0; }
 .note .actions { justify-content: flex-start; }

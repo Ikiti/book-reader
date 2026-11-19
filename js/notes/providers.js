@@ -1,14 +1,18 @@
-// Where notes can be sent. To add a provider (Notion, OneNote, email, a REST endpoint…),
-// add an entry with {label, available(), send(note, book)} and it shows up in Settings.
+// Where a note can be sent. To add one (Notion, OneNote, a REST endpoint…), add an entry with
+// {label, available(), send(note, book)}; it then shows up in the note editor and in Settings.
 //
-// Google Keep has no public API for personal accounts (the Keep API is Workspace-admin only),
-// so we reach Keep through the OS share sheet (Android) or clipboard + keep.new (Windows/desktop).
+// Google Keep can't be filled in from a web page on a computer: there's no "new note with this
+// text" link, and its API is only for company (Workspace) accounts. So:
+//   phone → the share sheet; pick Keep and the note arrives filled in;
+//   PC    → the note is copied and Keep opens on a new note: paste with Ctrl+V.
+// Email, Gmail and Obsidian do get the text filled in on every device.
 
-import { settings } from '../settings.js';
-import { toast } from '../ui.js';
-import { noteMarkdown, noteText } from './notes.js';
+import { settings, updateSettings } from '../settings.js';
+import { download, h, sheet, toast } from '../ui.js';
+import { noteMarkdown, noteText, noteTitle } from './notes.js';
 
 const isMobile = () => navigator.userAgentData?.mobile ?? /Android|iPhone|iPad/i.test(navigator.userAgent);
+const isMac = () => /Mac/i.test(navigator.platform || navigator.userAgent);
 
 async function copy(text) {
   try {
@@ -34,32 +38,85 @@ function openUrl(url) {
 
 const safeName = (s) => s.replace(/[\\/:*?"<>|#^[\]]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Book notes';
 
+async function share(note, book) {
+  try {
+    await navigator.share({ title: noteTitle(note, book), text: noteText(note, book) });
+    return true;
+  } catch (e) {
+    if (e.name === 'AbortError') return false;
+    throw e;
+  }
+}
+
+/**
+ * Keep on a computer: copy, explain the paste step once, open a new Keep note.
+ * The "Open Keep" button is its own click, so the browser doesn't block the new tab.
+ */
+function keepOnComputer(note, book) {
+  const text = noteText(note, book);
+  const keys = isMac() ? '⌘V' : 'Ctrl+V';
+  return new Promise((resolve) => {
+    copy(text);
+    if (settings().keepTipSeen) {
+      openUrl('https://keep.new');
+      toast(`Note copied — press ${keys} in the new Keep note`, 5000);
+      resolve(true);
+      return;
+    }
+    let done = false;
+    const again = h('label.row.small', h('input', { type: 'checkbox' }), ' Don’t explain this again');
+    const s = sheet('Send to Google Keep', h('div.form',
+      h('p', 'On a computer, Google Keep can’t receive text from other apps, so the note is ', h('b', 'copied'), ' for you.'),
+      h('ol.steps', h('li', 'Tap ', h('b', 'Open Keep'), ' — a new note opens.'), h('li', 'Press ', h('kbd', keys), ' to paste the note.')),
+      h('pre.preview', { dir: 'auto' }, text),
+      again,
+      h('div.actions',
+        h('button', { onclick: async () => { await copy(text); toast('Copied again'); } }, 'Copy again'),
+        h('button.primary', { onclick: async () => {
+          await copy(text);
+          if (again.querySelector('input').checked) await updateSettings({ keepTipSeen: true });
+          openUrl('https://keep.new');
+          done = true;
+          s.close();
+        } }, 'Open Keep'))), { onClose: () => resolve(done) });
+  });
+}
+
 export const PROVIDERS = {
-  share: {
-    label: 'Share sheet (Android → Google Keep)',
-    available: () => !!navigator.share,
-    async send(note, book) {
-      try {
-        await navigator.share({ title: `${book.title} — note`, text: noteText(note, book) });
-        return true;
-      } catch (e) {
-        if (e.name === 'AbortError') return false;
-        throw e;
-      }
-    },
-  },
   keep: {
-    label: 'Google Keep (copy + open Keep)',
+    label: 'Google Keep',
+    hint: () => (isMobile() && navigator.share ? 'opens the share menu: pick Keep, the note is filled in' : 'copies the note and opens a new Keep note: paste it'),
+    available: () => true,
+    send: (note, book) => (isMobile() && navigator.share ? share(note, book) : keepOnComputer(note, book)),
+  },
+  share: {
+    label: 'Share… (other apps)',
+    hint: () => (isMobile() ? 'the phone’s share menu' : 'Windows share: Mail, OneNote, Nearby…'),
+    available: () => !!navigator.share,
+    send: share,
+  },
+  email: {
+    label: 'Email',
+    hint: () => 'your mail app, with the note filled in',
     available: () => true,
     async send(note, book) {
-      await copy(noteText(note, book));
-      toast('Note copied — paste it into the new Keep note');
-      openUrl('https://keep.new');
+      openUrl(`mailto:?subject=${encodeURIComponent(noteTitle(note, book))}&body=${encodeURIComponent(noteText(note, book))}`);
+      return true;
+    },
+  },
+  gmail: {
+    label: 'Gmail (web)',
+    hint: () => 'a new Gmail message with the note filled in',
+    available: () => true,
+    async send(note, book) {
+      const q = new URLSearchParams({ view: 'cm', fs: '1', su: noteTitle(note, book), body: noteText(note, book) });
+      openUrl(`https://mail.google.com/mail/?${q}`);
       return true;
     },
   },
   obsidian: {
-    label: 'Obsidian (append to a note per book)',
+    label: 'Obsidian',
+    hint: () => 'added to one Markdown note per book',
     available: () => true,
     async send(note, book) {
       const s = settings();
@@ -72,7 +129,8 @@ export const PROVIDERS = {
     },
   },
   clipboard: {
-    label: 'Copy as Markdown',
+    label: 'Copy (Markdown)',
+    hint: () => 'paste it anywhere',
     available: () => true,
     async send(note, book) {
       await copy(noteMarkdown(note, book));
@@ -80,19 +138,31 @@ export const PROVIDERS = {
       return true;
     },
   },
+  file: {
+    label: 'Download .md file',
+    hint: () => 'saved to your Downloads folder',
+    available: () => true,
+    async send(note, book) {
+      download(`${safeName(book.title)} - note.md`, new Blob([`${noteMarkdown(note, book)}\n`], { type: 'text/markdown' }));
+      return true;
+    },
+  },
 };
 
-/** Provider id to use for "Send": the user's choice, or a sensible default per platform. */
+/** Provider id to use for "Send": the user's choice, else Google Keep. */
 export function defaultProviderId() {
   const chosen = settings().noteProvider;
-  if (chosen && chosen !== 'auto' && PROVIDERS[chosen]?.available()) return chosen;
-  return isMobile() && PROVIDERS.share.available() ? 'share' : 'keep';
+  if (chosen === 'share' && !navigator.share) return 'keep';
+  return chosen && chosen !== 'auto' && PROVIDERS[chosen]?.available() ? chosen : 'keep';
 }
 
+/** Send a note; on success it's recorded in note.sent (the caller saves the note). */
 export async function sendNote(note, book, id = defaultProviderId()) {
   const p = PROVIDERS[id];
   try {
-    return await p.send(note, book);
+    const ok = await p.send(note, book);
+    if (ok) (note.sent ||= []).push({ to: id, label: p.label, at: Date.now() });
+    return ok;
   } catch (e) {
     console.warn('send failed', e);
     toast(`Could not send: ${e.message || e}`);

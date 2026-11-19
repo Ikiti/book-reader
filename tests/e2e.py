@@ -134,24 +134,68 @@ with sync_playwright() as p:
       const s = getSelection(); s.removeAllRanges(); s.addRange(r);
     }""")
     page.wait_for_selector('.selbar:not([hidden])')
+    check('no "Add to note" before the first note', not page.locator('.selbar button', has_text='Add to note').is_visible())
     shot(page, '10-selection-bar')
-    page.locator('.selbar button', has_text='Note').click()
+    page.locator('.selbar button', has_text='New note').click()
     page.wait_for_selector('.sheet textarea')
-    page.locator('.sheet textarea').nth(1).fill('Good point about locations.')
+    check('new note says it is not saved yet', 'Not saved yet' in page.locator('.save-state').inner_text())
+    page.locator('.sheet textarea.comment').fill('Good point about locations.')
+    page.wait_for_timeout(800)
+    check(f'note saves as you type and says where ({page.locator(".save-state").inner_text()})', 'Saved in this book’s notes' in page.locator('.save-state').inner_text())
     page.locator('.sheet select').select_option('clipboard')
     shot(page, '11-note-editor')
-    page.get_by_role('button', name='Save & send').click()
+    page.locator('.send-row button', has_text='Send').click()
     page.wait_for_timeout(400)
     clip = page.evaluate('navigator.clipboard.readText()')
     check('note sent as markdown', clip.startswith('> Notes are saved together with the chapter and page') and 'Chapter 4: Two-Column Articles · p. 4' in clip)
+    check('editor shows where it was sent', 'Sent to Copy (Markdown)' in page.locator('.sheet').inner_text())
+    # Google Keep on a computer: copied + the paste step explained
+    page.locator('.sheet select').select_option('keep')
+    page.locator('.send-row button', has_text='Send').click()
+    page.wait_for_selector('.sheet >> text=Open Keep')
+    clip = page.evaluate('navigator.clipboard.readText()')
+    check('Keep: note copied, paste step explained', clip.startswith('“Notes are saved together') and page.locator('kbd').count() == 1)
+    page.wait_for_timeout(400)
+    shot(page, '11b-keep-paste')
+    page.keyboard.press('Escape')
+    page.wait_for_timeout(300)
+    page.get_by_role('button', name='Done').click()
+    page.wait_for_timeout(300)
     check('quote highlighted', page.locator('.flow mark.hl').count() == 1)
+    # Add another quote to the last note
+    page.evaluate("""() => {
+      const p = [...document.querySelectorAll('.flow p')].find(p => p.textContent.includes('Reading on a phone'));
+      p.scrollIntoView({block: 'center'});
+      const t = p.firstChild; const r = document.createRange();
+      r.setStart(t, 0); r.setEnd(t, 'Reading on a phone'.length);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    }""")
+    page.wait_for_selector('.selbar:not([hidden])')
+    page.locator('.selbar button', has_text='Add to note').click()
+    page.wait_for_selector('.sheet .clip')
+    check('quote added to the last note', page.locator('.sheet .clip').count() == 2)
+    page.wait_for_timeout(700)
+    page.get_by_role('button', name='Done').click()
+    page.wait_for_timeout(300)
+    check('both quotes highlighted', page.locator('.flow mark.hl').count() == 2)
     bars(page)
     page.get_by_label('Notes').click()
     page.wait_for_selector('.note')
-    check('note listed', page.locator('.note').count() == 1)
+    check('note listed with its two quotes', page.locator('.note').count() == 1 and page.locator('.note blockquote').count() == 2)
+    page.wait_for_timeout(400)
     shot(page, '12-notes')
+    # A note without a quote
+    page.get_by_role('button', name='＋ New note').click()
+    page.wait_for_selector('.sheet textarea.comment')
+    page.locator('.sheet textarea.comment').fill('Ask about EPUB on e-readers.')
+    page.get_by_role('button', name='Done').click()
+    page.wait_for_timeout(500)
+    # The last note reopens the one just written
+    page.keyboard.press('l')
+    page.wait_for_selector('.sheet textarea.comment')
+    check('"last note" opens the latest one', page.locator('.sheet textarea.comment').input_value() == 'Ask about EPUB on e-readers.')
     page.keyboard.press('Escape')
-
+    page.wait_for_timeout(300)
     # Resume position after reload
     page.evaluate("document.querySelector('.flow .tbl').scrollIntoView({block:'start'})")
     page.wait_for_timeout(1300)  # throttle + debounced save
@@ -181,6 +225,8 @@ with sync_playwright() as p:
     page.wait_for_selector('.card')
     where = page.locator('.card .where').inner_text()
     check(f'library shows progress ({where})', 'p. 3' in where)
+    when = page.locator('.card .when').inner_text()
+    check(f'library card shows the notes, kept after reloads ({when})', '2 notes' in when)
     shot(page, '14-library-progress')
 
     # Export EPUB from the library card (phone)

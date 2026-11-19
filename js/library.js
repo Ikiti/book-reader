@@ -11,6 +11,8 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
   urls.forEach(URL.revokeObjectURL);
   urls = [];
   const books = (await all('books')).sort((a, b) => (b.openedAt || b.addedAt) - (a.openedAt || a.addedAt));
+  const noteCount = new Map();
+  for (const n of await all('notes')) noteCount.set(n.bookId, (noteCount.get(n.bookId) || 0) + 1);
   const input = h('input#pick-import', { type: 'file', accept: 'application/pdf,.pdf,application/epub+zip,.epub', multiple: true, hidden: true, onchange: (e) => { onImport([...e.target.files]); e.target.value = ''; } });
   // One step: pick PDF(s) -> converted -> EPUB offered for download.
   const convertInput = h('input#pick-convert', { type: 'file', accept: 'application/pdf,.pdf', multiple: true, hidden: true, onchange: (e) => { onImport([...e.target.files], { epub: true }); e.target.value = ''; } });
@@ -57,7 +59,8 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
         b.author ? h('div.author.muted', b.author) : null,
         h('div.progress', { title: `${pct}% read` }, h('span', { style: { width: `${pct}%` } })),
         h('div.where.muted', where),
-        h('div.when.muted', b.openedAt ? `Opened ${fmtDate(b.openedAt)}` : `Added ${fmtDate(b.addedAt)}`),
+        h('div.when.muted', [b.openedAt ? `Opened ${fmtDate(b.openedAt)}` : `Added ${fmtDate(b.addedAt)}`,
+          noteCount.get(b.id) ? `🗒 ${noteCount.get(b.id)} note${noteCount.get(b.id) > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ')),
         h('div.card-actions',
           isEpub ? null : h('button.small.epub-btn', { onclick: () => onEpub(b.id), title: 'Export as EPUB for other e-book apps' }, '⤓ EPUB'),
           h('button.small', { onclick: () => onOpen(b.id) }, p ? 'Continue' : 'Read'))),

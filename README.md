@@ -39,10 +39,7 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
    - The original page view is one tap away.
    - Contents panel.
    - It tracks **where you are** (chapter, page) and **what you've actually read**, per chapter, with bookmarks and a way back after jumps. See [Reading progress](#reading-progress).
-5. **Notes from selected text**
-   - On Android, the share sheet sends them to Google Keep.
-   - On Windows, the note is copied and keep.new opens.
-   - You can also append to an Obsidian note per book, copy as Markdown, or export all notes as `.md`. Notes are highlighted in the text.
+5. **Notes** — kept in the app with the book (🗒 in the reader; the library card shows how many). See [Notes](#notes).
 6. **App integration**
    - Install it as an app, and it works offline.
    - Windows file association.
@@ -96,7 +93,27 @@ Netlify, Cloudflare Pages or an internal IIS or nginx server work the same way: 
 On a phone, open the EPUB with ReadEra, Moon+ Reader, Lithium or Google Play Books (upload). On Windows, use Thorium Reader or Calibre, or Kindle through Send to Kindle, which accepts EPUB.
 
 ### Reader keys (Windows)
-`T` contents · `N` notes · `B` bookmark · `G` go to page · `A` text settings · `E` export EPUB · `O` original pages · `+`/`-` text size · `←`/`→` page · `Esc` library.
+`T` contents · `N` notes · `M` new note · `L` last note · `B` bookmark · `G` go to page · `A` text settings · `E` export EPUB · `O` original pages · `+`/`-` text size · `←`/`→` page · `Esc` library.
+
+---
+
+## Notes
+
+Notes are saved **in the app, with the book**, as you type (the editor shows *✓ Saved in this book's notes*). Open them with 🗒 in the reader (or `N`); the library card shows how many a book has. Quotes are highlighted in the text; tap one to open its note.
+
+- **New note:** select text → **📝 New note**, or 🗒 → **＋ New note** / ⋮ → *New note here* (`M`) for a note without a quote.
+- **Keep working on a note:** select more text → **➕ Add to note** adds it to the note you edited last (with its page). 🗒 → **✎ Last note** (`L`) reopens it.
+- **Send** copies a note to another app; the note stays here and shows where it was sent:
+
+| Send to | What happens |
+|---|---|
+| Google Keep, phone | Share menu → pick Keep: the note arrives filled in. |
+| Google Keep, PC | The note is copied and a new Keep note opens: press `Ctrl+V`. Keep has no way to receive text from a web page on a computer (no link for it; its API is for company Workspace accounts only). |
+| Email / Gmail | A new message with the note filled in. |
+| Obsidian | Added to one Markdown note per book (vault and folder in Aa → *Obsidian options*). |
+| Copy / Download .md | Markdown to paste anywhere, or a file. |
+
+🗒 → **Export .md** saves all of a book's notes in one file.
 
 ---
 
@@ -179,7 +196,7 @@ js/ocr/page.js      OCR words → the same fragments as a text PDF (code, bullet
 js/ocr/provider.js  Tesseract worker, language choice, straightening, second pass for missed lines
 js/ocr/skew.js      measures a scan's tilt (projection profile)
 js/progress.js      reading progress: what's read (block ranges), chapters, speed, re-process remap
-js/notes/*          notes and where they're sent (Keep, Obsidian, Markdown)
+js/notes/*          notes (several quotes + your text, autosaved) and where they're sent (Keep, email, Obsidian…)
 tools/pdf2epub.mjs  command-line converter    tools/node-ocr.mjs  OCR in Node
 tools/vendor.mjs    copies pdf.js and Tesseract into vendor/ (npm run vendor)
 tests/*             extraction, EPUB and end-to-end browser tests

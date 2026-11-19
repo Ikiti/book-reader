@@ -6,7 +6,7 @@ import {
   FINISHED_SHARE, addRange, blockSizes, chapterRanges, creditVisible, emptyReading, loadReading, prefix,
   rangeStats, readSize, removeRange, timeFor, updateSpeed,
 } from './progress.js';
-import { deleteNote, listNotes, newNote, saveNote, bookNotesMarkdown } from './notes/notes.js';
+import { bookNotesMarkdown, deleteNote, isEmpty, lastNote, listNotes, newNote, quotesOf, saveNote } from './notes/notes.js';
 import { PROVIDERS, copy, defaultProviderId, sendNote } from './notes/providers.js';
 import { FONTS, THEMES, settings, updateSettings } from './settings.js';
 import { $, download, fmtDate, h, sheet, toast } from './ui.js';
@@ -69,10 +69,13 @@ class Reader {
     this.status = h('div.status');
     this.flow = h('main.flow', { tabIndex: -1 });
     this.pagesEl = h('main.pages', { hidden: true });
+    const selBtn = (label, fn, title) => h('button', { onmousedown: (e) => e.preventDefault(), onclick: fn, title }, label);
+    this.addBtn = selBtn('➕ Add to note', () => this.addSelectionToLast(), 'Add this quote to the note you worked on last');
     this.selbar = h('div.selbar', { hidden: true },
-      h('button', { onmousedown: (e) => e.preventDefault(), onclick: () => this.noteFromSelection() }, '📝 Note'),
-      h('button', { onmousedown: (e) => e.preventDefault(), onclick: () => this.copySelection() }, 'Copy'),
-      h('button', { onmousedown: (e) => e.preventDefault(), onclick: () => this.quickSend() }, 'Send'));
+      selBtn('📝 New note', () => this.noteFromSelection(), 'New note with this quote'),
+      this.addBtn,
+      selBtn('Copy', () => this.copySelection()),
+      selBtn('Send', () => this.quickSend(), 'Save as a note and send it'));
     this.isEpub = this.model.kind === 'epub';
     // EPUB books have no fixed pages to show; the "original pages" view is for PDFs.
     this.modeBtn = this.isEpub ? null : h('button.icon', { title: 'Original pages / Reflow (O)', 'aria-label': 'Toggle original pages', onclick: () => this.toggleMode() }, '⧉');
@@ -446,6 +449,7 @@ class Reader {
     this.selection = { text, block: startEl ? +startEl.dataset.b : this.pos?.b || 0 };
     const rect = range.getBoundingClientRect();
     const bar = this.selbar;
+    this.addBtn.hidden = !lastNote(this.notes);
     bar.hidden = false;
     // Below the selection: Android shows its own menu above it.
     const top = Math.min(innerHeight - bar.offsetHeight - 70, rect.bottom + 12);
@@ -480,45 +484,139 @@ class Reader {
     await saveNote(note);
     this.notes.push(note);
     this.paintHighlights();
-    await sendNote(note, this.book);
+    if (await sendNote(note, this.book)) await saveNote(note);
   }
 
   noteFromSelection() {
     const note = this.selectionNote();
     if (!note) return;
     this.clearSelection();
-    this.editNote(note, true);
+    this.editNote(note, { isNew: true });
   }
 
-  editNote(note, isNew = false) {
-    const quote = h('textarea.quote', { rows: 4, value: note.quote, 'aria-label': 'Quote' });
-    const comment = h('textarea', { rows: 3, placeholder: 'Your thoughts (optional)', value: note.comment, 'aria-label': 'Comment' });
-    const provider = h('select', { 'aria-label': 'Send to' },
-      Object.entries(PROVIDERS).filter(([, p]) => p.available()).map(([id, p]) => h('option', { value: id, selected: id === defaultProviderId() }, p.label)));
-    const persist = async () => {
-      note.quote = quote.value.trim();
-      note.comment = comment.value.trim();
-      await saveNote(note);
-      if (isNew) this.notes.push(note);
-      this.paintHighlights();
+  /** A note with no quote, anchored where you are reading. */
+  newBlankNote() {
+    const b = this.pos?.b ?? 0;
+    const blk = this.model.blocks[b];
+    this.editNote(newNote({ bookId: this.book.id, chapter: this.chapterAt(b)?.title || '', page: blk ? this.label(blk.pg) : '', block: b }), { isNew: true });
+  }
+
+  /** Reopen the note you worked on last. */
+  editLastNote() {
+    const n = lastNote(this.notes);
+    if (n) this.editNote(n); else this.newBlankNote();
+  }
+
+  /** Selected text → one more quote in the note you worked on last. */
+  addSelectionToLast() {
+    const add = this.selectionNote();
+    const n = lastNote(this.notes);
+    if (!add || !n) return;
+    this.clearSelection();
+    (n.clips ||= []).push({ quote: add.quote, chapter: add.chapter, page: add.page, block: add.block });
+    this.editNote(n, { added: true });
+  }
+
+  /**
+   * Note editor. Changes are saved as you type (in this book's notes, 🗒); "Send" also copies the
+   * note to another app. An empty new note isn't kept.
+   */
+  editNote(note, { isNew = false, added = false } = {}) {
+    let saved = !isNew || added ? 'yes' : 'no';
+    const status = h('div.save-state.small');
+    const sentInfo = h('div.muted.small');
+    const showSent = () => {
+      const last = note.sent?.[note.sent.length - 1];
+      sentInfo.textContent = last ? `Sent to ${last.label} · ${fmtDate(last.at)} ${new Date(last.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
     };
-    const s = sheet(isNew ? 'New note' : 'Edit note', h('div.form',
-      h('div.where.muted', [note.chapter, note.page && `p. ${note.page}`].filter(Boolean).join(' · ')),
-      quote, comment,
-      h('label.row', 'Send to ', provider),
+    const showState = (state) => {
+      status.textContent = state === 'saving' ? 'Saving…' : state === 'yes' ? '✓ Saved in this book’s notes (🗒 Notes)' : 'Not saved yet — type something';
+      status.className = `save-state small ${state === 'yes' ? 'ok' : 'muted'}`;
+    };
+    // Quotes: the anchoring one and any added later.
+    const quotes = quotesOf(note).map((q) => ({ ...q }));
+    const quoteBox = h('div.quotes');
+    const drawQuotes = () => {
+      quoteBox.replaceChildren(...quotes.map((q, i) => h('div.clip',
+        h('textarea.quote', { rows: Math.min(6, Math.max(2, Math.ceil(q.quote.length / 45))), value: q.quote, dir: 'auto', 'aria-label': `Quote ${i + 1}`,
+          oninput: (e) => { q.quote = e.target.value; queue(); } }),
+        h('div.clip-meta.muted.small', [q.page && `p. ${q.page}`, q.chapter].filter(Boolean).join(' · '),
+          h('button.icon.small', { title: 'Remove this quote', 'aria-label': 'Remove quote', onclick: () => { quotes.splice(i, 1); drawQuotes(); queue(); } }, '✕')))));
+      if (!quotes.length) quoteBox.append(h('p.muted.small', 'No quote. To add one: select text in the book → ➕ Add to note.'));
+    };
+    drawQuotes();
+    const comment = h('textarea.comment', { rows: 4, placeholder: 'Your note', value: note.comment, dir: 'auto', 'aria-label': 'Your note', oninput: () => queue() });
+
+    const apply = () => {
+      const qs = quotes.map((q) => ({ ...q, quote: q.quote.trim() })).filter((q) => q.quote);
+      const [first, ...rest] = qs;
+      if (first) Object.assign(note, { quote: first.quote, chapter: first.chapter, page: first.page, block: first.block });
+      else note.quote = '';
+      note.clips = rest;
+      note.comment = comment.value.trim();
+    };
+    const persist = async () => {
+      apply();
+      if (isEmpty(note)) { showState(saved === 'yes' ? 'yes' : 'no'); return false; }
+      showState('saving');
+      await saveNote(note);
+      if (!this.notes.includes(note)) this.notes.push(note);
+      saved = 'yes';
+      showState('yes');
+      this.paintHighlights();
+      return true;
+    };
+    let timer = null;
+    const queue = () => { clearTimeout(timer); showState('saving'); timer = setTimeout(persist, 500); };
+
+    const provider = h('select', { 'aria-label': 'Send to', onchange: () => { hint.textContent = PROVIDERS[provider.value].hint?.() || ''; } },
+      Object.entries(PROVIDERS).filter(([, p]) => p.available()).map(([id, p]) => h('option', { value: id, selected: id === defaultProviderId() }, p.label)));
+    const hint = h('div.muted.small', PROVIDERS[provider.value].hint?.() || '');
+    const send = async () => {
+      clearTimeout(timer);
+      if (!(await persist())) { toast('Write something first'); return; }
+      if (await sendNote(note, this.book, provider.value)) { await saveNote(note); showSent(); }
+    };
+    const s = sheet(isNew ? 'New note' : 'Note', h('div.form.note-editor',
+      h('div.where.muted', [note.chapter, note.page && `p. ${note.page}`].filter(Boolean).join(' · ') || this.book.title),
+      quoteBox,
+      comment,
+      status,
+      h('div.send-row', provider, h('button.primary', { onclick: send }, 'Send')),
+      hint,
+      sentInfo,
       h('div.actions',
-        h('button', { onclick: async () => { await persist(); s.close(); toast('Note saved'); } }, 'Save'),
-        h('button.primary', { onclick: async () => { await persist(); s.close(); await sendNote(note, this.book, provider.value); } }, 'Save & send'))));
-    setTimeout(() => comment.focus(), 50);
+        isNew ? null : h('button.danger', { onclick: async () => {
+          if (!confirm('Delete this note?')) return;
+          clearTimeout(timer);
+          await deleteNote(note.id);
+          this.notes = this.notes.filter((x) => x !== note);
+          saved = 'deleted';
+          this.paintHighlights();
+          s.close();
+          toast('Note deleted');
+        } }, 'Delete'),
+        h('button', { onclick: () => s.close() }, 'Done'))),
+      { onClose: () => {
+        clearTimeout(timer);
+        if (saved === 'deleted') return;
+        persist().then((ok) => { if (ok && isNew) toast('Note saved — find it under 🗒 Notes', 3000); });
+      } });
+    showState(saved);
+    showSent();
+    if (added) queue(); // the new quote is saved straight away
+    setTimeout(() => (added ? quoteBox.querySelector('.clip:last-child textarea') : comment).focus(), 50);
   }
 
-  /** Mark the start of each note's quote in the text. */
+  /** Mark the start of each note's quotes in the text. */
   paintHighlights() {
     this.flow.querySelectorAll('mark.hl').forEach((m) => m.replaceWith(...m.childNodes));
     this.flow.normalize();
     for (const n of this.notes) {
-      const el = this.flow.querySelector(`[data-b="${n.block}"]`);
-      if (el && n.quote) markText(el, n.quote, n.id, () => this.editNote(n));
+      for (const q of quotesOf(n)) {
+        const el = this.flow.querySelector(`[data-b="${q.block}"]`);
+        if (el) markText(el, q.quote, n.id, () => this.editNote(n));
+      }
     }
   }
 
@@ -658,6 +756,8 @@ class Reader {
     const s = sheet(this.book.title, h('div.menu',
       act(p && this.bookmarkAt(p.b) ? 'Remove bookmark here' : '🔖 Bookmark this place  (B)', () => this.toggleBookmark()),
       act('Bookmarks…', () => this.showToc('bm')),
+      act('📝 New note here  (M)', () => this.newBlankNote()),
+      lastNote(this.notes) ? act('✎ Continue last note  (L)', () => this.editLastNote()) : null,
       this.model.pageless ? null : act('Go to page…  (G)', () => this.goToPage()),
       ch && chSt.state !== 'done' ? act(`Mark “${short(ch.title)}” as read`, () => { this.reading.read = addRange(this.reading.read, ch.from, ch.to); this.onRead(true); toast('Chapter marked as read'); }) : null,
       ch && chSt.read > 0 ? act(`Mark “${short(ch.title)}” as unread`, () => { this.reading.read = removeRange(this.reading.read, ch.from, ch.to); this.reading.finishedAt = 0; this.onRead(true); toast('Chapter marked as unread'); }) : null,
@@ -693,26 +793,31 @@ class Reader {
 
   async showNotes() {
     const notes = (this.notes = await listNotes(this.book.id));
-    const list = notes.map((n) => h('article.note',
-      h('blockquote', { dir: 'auto' }, n.quote),
-      n.comment ? h('p', { dir: 'auto' }, n.comment) : null,
-      h('div.muted.small', [n.chapter, n.page && `p. ${n.page}`, fmtDate(n.createdAt)].filter(Boolean).join(' · ')),
+    const last = lastNote(notes);
+    const card = (n) => h(`article.note${n === last ? '.last' : ''}`,
+      h('button.note-open', { onclick: () => { s.close(); this.editNote(n); }, title: 'Open the note' },
+        ...quotesOf(n).map((q) => h('blockquote', { dir: 'auto' }, q.quote)),
+        n.comment ? h('p', { dir: 'auto' }, n.comment) : null,
+        h('div.muted.small', [n.chapter, n.page && `p. ${n.page}`, `edited ${fmtDate(n.updatedAt || n.createdAt)}`,
+          n.sent?.length ? `sent to ${n.sent[n.sent.length - 1].label}` : ''].filter(Boolean).join(' · '))),
       h('div.actions',
         h('button', { onclick: () => { s.close(); this.jumpTo(n.block); } }, 'Go to'),
-        h('button', { onclick: () => sendNote(n, this.book) }, 'Send'),
-        h('button', { onclick: () => { s.close(); this.editNote(n); } }, 'Edit'),
+        h('button', { onclick: async () => { if (await sendNote(n, this.book)) await saveNote(n); } }, 'Send'),
         h('button.danger', { onclick: async (e) => {
           if (!confirm('Delete this note?')) return;
           await deleteNote(n.id);
           this.notes = this.notes.filter((x) => x.id !== n.id);
           this.paintHighlights();
           e.target.closest('.note').remove();
-        } }, 'Delete'))));
+        } }, 'Delete')));
     const s = sheet(`Notes (${notes.length})`, h('div',
-      notes.length ? h('div.actions.top',
-        h('button', { onclick: () => download(`${this.book.title} - notes.md`, new Blob([bookNotesMarkdown(notes, this.book)], { type: 'text/markdown' })) }, 'Export .md'),
-        h('button', { onclick: async () => { await copy(bookNotesMarkdown(notes, this.book)); toast('All notes copied'); } }, 'Copy all')) : null,
-      notes.length ? list : h('p.muted', 'No notes yet. Select text while reading and tap “📝 Note”.')), { side: true });
+      h('p.muted.small', 'Notes are kept in this app, with the book (also offline). “Send” copies one to Keep, email, Obsidian…'),
+      h('div.actions.top',
+        h('button.primary', { onclick: () => { s.close(); this.newBlankNote(); } }, '＋ New note'),
+        last ? h('button', { onclick: () => { s.close(); this.editNote(last); } }, '✎ Last note') : null,
+        notes.length ? h('button', { onclick: () => download(`${this.book.title} - notes.md`, new Blob([bookNotesMarkdown(notes, this.book)], { type: 'text/markdown' })) }, 'Export .md') : null,
+        notes.length ? h('button', { onclick: async () => { await copy(bookNotesMarkdown(notes, this.book)); toast('All notes copied'); } }, 'Copy all') : null),
+      notes.length ? notes.map(card) : h('p.muted', 'No notes yet. Select text while reading and tap “📝 New note”, or start an empty one with ＋ New note.')), { side: true });
   }
 
   showSettings() {
@@ -753,8 +858,8 @@ class Reader {
       h('div.toggles', toggle('justify', 'Justify text'), toggle('pageMarkers', 'Show page numbers in text')),
       h('h3', 'Send notes to'),
       h('select', { onchange: (e) => updateSettings({ noteProvider: e.target.value }) },
-        h('option', { value: 'auto', selected: st.noteProvider === 'auto' }, 'Automatic (share on phone, Keep on PC)'),
-        Object.entries(PROVIDERS).filter(([, p]) => p.available()).map(([id, p]) => h('option', { value: id, selected: st.noteProvider === id }, p.label))),
+        Object.entries(PROVIDERS).filter(([, p]) => p.available()).map(([id, p]) => h('option', { value: id, selected: defaultProviderId() === id }, p.label))),
+      h('p.muted.small', 'Notes are always kept in the app (🗒 in the reader); this is where “Send” copies them.'),
       h('details', h('summary', 'Obsidian options'), h('div.form', vault, folder)),
     ), { side: true });
   }
@@ -769,6 +874,8 @@ class Reader {
     else if ((k === 'o' || k === 'O') && !this.isEpub) this.toggleMode();
     else if ((k === 'e' || k === 'E') && !this.isEpub) import('./epub/export.js').then((m) => m.exportEpub(this.book.id));
     else if (k === 'b' || k === 'B') this.toggleBookmark();
+    else if (k === 'm' || k === 'M') this.newBlankNote();
+    else if (k === 'l' || k === 'L') this.editLastNote();
     else if ((k === 'g' || k === 'G') && !this.model.pageless) this.goToPage();
     else if (k === '+' || k === '=') updateSettings({ size: Math.min(36, settings().size + 1) });
     else if (k === '-') updateSettings({ size: Math.max(12, settings().size - 1) });
