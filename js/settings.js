@@ -9,14 +9,17 @@ export const FONTS = {
   readable: { label: 'Readable', css: 'Verdana, "Segoe UI", Tahoma, "Noto Sans", sans-serif' },
 };
 
-export const THEMES = { light: 'Light', sepia: 'Sepia', dark: 'Dark', black: 'Black' };
+export const THEMES = { auto: 'Auto', light: 'Light', sepia: 'Sepia', dark: 'Dark', black: 'Black' };
+// Pictures in a dark theme: invert diagrams and dim photos / dim everything / leave as they are.
+export const DARK_PICS = { smart: 'Invert diagrams, dim photos', dim: 'Dim all pictures', off: 'Leave pictures as they are' };
 
 export const DEFAULTS = {
   font: 'serif',
   size: 19, // px
   lineHeight: 1.6,
   width: 38, // em
-  theme: 'light',
+  theme: 'auto', // 'auto' follows the phone / Windows dark-mode setting
+  darkPics: 'smart',
   justify: false,
   pageMarkers: true,
   noteProvider: 'auto',
@@ -42,9 +45,18 @@ export async function updateSettings(patch) {
   await setSetting('reader', current);
 }
 
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+systemDark.addEventListener?.('change', () => { if (current.theme === 'auto') applySettings(); });
+
+/** The theme actually shown ('auto' resolved to light or dark). */
+export const shownTheme = () => (current.theme === 'auto' ? (systemDark.matches ? 'dark' : 'light') : current.theme);
+
 export function applySettings() {
   const r = document.documentElement;
-  r.dataset.theme = current.theme;
+  const theme = shownTheme();
+  r.dataset.theme = theme;
+  r.dataset.darkpics = current.darkPics || 'smart';
+  try { localStorage.setItem('br-theme', theme); } catch { /* private mode */ } // index.html applies it before the app loads
   r.style.setProperty('--read-font', FONTS[current.font]?.css || FONTS.serif.css);
   r.style.setProperty('--read-size', `${current.size}px`);
   r.style.setProperty('--read-lh', current.lineHeight);

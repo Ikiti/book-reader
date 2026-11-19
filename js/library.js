@@ -2,7 +2,7 @@
 import { all, deleteBook, get, put } from './db.js';
 import { emptyReading } from './progress.js';
 import { bookNotesMarkdown, listNotes } from './notes/notes.js';
-import { settings, updateSettings } from './settings.js';
+import { DARK_PICS, THEMES, settings, updateSettings } from './settings.js';
 import { $, download, fmtDate, h, sheet, toast } from './ui.js';
 
 let urls = [];
@@ -32,7 +32,7 @@ export async function renderLibrary(root, { onImport, onOpen, onReprocess, onEpu
       h('div.spacer'),
       h('button.primary#convert', { onclick: () => convertInput.click(), title: 'Convert PDF files to EPUB' }, 'PDF → EPUB'),
       h('button#import', { onclick: () => input.click(), title: 'Add a PDF or EPUB to the library (or drop files here)', 'aria-label': 'Add book' }, '＋ Add'),
-      h('button.icon#lib-settings', { onclick: libSettings, title: 'Import settings', 'aria-label': 'Import settings' }, '⚙'),
+      h('button.icon#lib-settings', { onclick: libSettings, title: 'Settings: theme, OCR', 'aria-label': 'Settings' }, '⚙'),
       input, convertInput),
     h('main.library', books.length ? grid : empty, h('p.muted.storage#storage')),
   );
@@ -120,7 +120,21 @@ const OCR_CHOICES = {
 
 function libSettings() {
   const st = settings();
-  sheet('Import settings', h('div.settings',
+  const themeChip = (k, label) => h(`button.chip${st.theme === k ? '.on' : ''}`, {
+    onclick: async (e) => {
+      await updateSettings({ theme: k });
+      st.theme = k;
+      e.target.parentElement.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === e.target));
+    },
+  }, label);
+  sheet('Settings', h('div.settings',
+    h('h3', 'Theme'),
+    h('div.chips', Object.entries(THEMES).map(([k, l]) => themeChip(k, l))),
+    h('p.muted.small', 'Auto follows your phone’s / Windows’ dark mode. Font and size: Aa while reading.'),
+    h('label.field', h('span', 'Pictures in dark mode'),
+      h('select', { onchange: (e) => updateSettings({ darkPics: e.target.value }) },
+        Object.entries(DARK_PICS).map(([v, l]) => h('option', { value: v, selected: st.darkPics === v }, l)))),
+    h('h3', 'Import'),
     h('label.field', h('span', 'Scanned / picture-only PDF pages (OCR)'),
       h('select#ocr-lang', { onchange: (e) => updateSettings({ ocrLang: e.target.value }) },
         Object.entries(OCR_CHOICES).map(([v, label]) => h('option', { value: v, selected: st.ocrLang === v }, label)))),

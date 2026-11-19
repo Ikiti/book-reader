@@ -97,7 +97,15 @@ body.drop .drop-hint { display: grid; place-items: center; position: fixed; inse
 .flow .pg:first-child > h2:first-child { margin-top: .3em; }
 .flow figure { margin: 1.2em 0; text-align: center; }
 .flow figure img { width: 100%; height: auto; border-radius: 4px; background: #fff; }
-[data-theme="dark"] .flow figure img, [data-theme="black"] .flow figure img { filter: brightness(.9); }
+/* Pictures in dark themes (see js/artkind.js): diagrams inverted (dark background, light lines,
+   colours kept), photos dimmed. Aa → Pictures in dark mode changes this. */
+[data-theme="dark"] { --pic-filter: brightness(.82) contrast(1.06); --line-filter: invert(.88) hue-rotate(180deg) brightness(1.05); }
+[data-theme="black"] { --pic-filter: brightness(.72) contrast(1.08); --line-filter: invert(.96) hue-rotate(180deg); }
+[data-darkpics="dim"] { --line-filter: var(--pic-filter); }
+[data-darkpics="off"] { --pic-filter: none; --line-filter: none; }
+.flow figure img, .tbl img.snap, .card .cover img, .page canvas { filter: var(--pic-filter, none); }
+.flow figure img[data-art="line"], .tbl img.snap[data-art="line"], .page[data-art="line"] canvas { filter: var(--line-filter, none); }
+[data-theme="dark"] .page, [data-theme="black"] .page { background: var(--card); }
 .flow figure.scan img { border: 1px solid var(--border); }
 .flow figure figcaption { font: .78rem var(--ui-font); margin-top: .4em; }
 .flow pre.code { font: .78em/1.4 ui-monospace, "Cascadia Mono", Consolas, "Roboto Mono", monospace; background: var(--code); border-left: 3px solid var(--border); padding: .6em .8em; margin: 1em 0; overflow-x: auto; white-space: pre; border-radius: 4px; }

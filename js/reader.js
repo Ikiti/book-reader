@@ -8,7 +8,8 @@ import {
 } from './progress.js';
 import { bookNotesMarkdown, deleteNote, isEmpty, lastNote, listNotes, newNote, quotesOf, saveNote } from './notes/notes.js';
 import { PROVIDERS, copy, defaultProviderId, sendNote } from './notes/providers.js';
-import { FONTS, THEMES, settings, updateSettings } from './settings.js';
+import { classifyElement } from './artkind.js';
+import { DARK_PICS, FONTS, THEMES, settings, updateSettings } from './settings.js';
 import { $, download, fmtDate, h, sheet, toast } from './ui.js';
 import { EXTRACT_VERSION } from './pdf/extract.js';
 
@@ -197,6 +198,8 @@ class Reader {
           if (!row) return;
           const url = URL.createObjectURL(row.blob);
           this.urls.push(url);
+          // Diagram or photo? Decides how it's shown in a dark theme.
+          img.addEventListener('load', () => { try { img.dataset.art = classifyElement(img); } catch { /* keep as photo */ } }, { once: true });
           img.src = url;
         });
       }
@@ -400,6 +403,7 @@ class Reader {
       const canvas = el.querySelector('canvas') || h('canvas');
       await renderPage(page, scale, canvas);
       el.append(canvas);
+      if (!el.dataset.art) try { el.dataset.art = classifyElement(canvas); } catch { /* keep as is */ }
       rendered.set(n, scale);
     };
     this.pageIo = new IntersectionObserver((entries) => {
@@ -855,6 +859,10 @@ class Reader {
       h('h3', 'Line spacing'), h('div.row', ...range('lineHeight', 1.2, 2.2, 0.05, (v) => v.toFixed(2))),
       h('h3', 'Text width'), h('div.row', ...range('width', 24, 60, 1, (v) => `${v} em`)),
       h('h3', 'Theme'), h('div.chips', Object.entries(THEMES).map(([k, l]) => chip('theme', k, l))),
+      h('p.muted.small', 'Auto follows your phone’s / Windows’ dark mode.'),
+      h('label.field', h('span.small', 'Pictures in dark mode'),
+        h('select', { onchange: (e) => updateSettings({ darkPics: e.target.value }) },
+          Object.entries(DARK_PICS).map(([v, l]) => h('option', { value: v, selected: st.darkPics === v }, l)))),
       h('div.toggles', toggle('justify', 'Justify text'), toggle('pageMarkers', 'Show page numbers in text')),
       h('h3', 'Send notes to'),
       h('select', { onchange: (e) => updateSettings({ noteProvider: e.target.value }) },

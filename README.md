@@ -35,7 +35,8 @@ Everything runs **on your device and offline**: no server, no cloud, no AI token
    - Copy-protected (DRM) books are refused with a clear message: they can only be opened in the app they were bought for.
 3. **Library** stored on the device. It skips duplicates and asks the browser not to delete it when storage is low.
 4. **Reader**
-   - Reflowed text with font, size, line spacing, width and theme controls (Light, Sepia, Dark, Black).
+   - Reflowed text with font, size, line spacing, width and theme controls.
+   - **Themes:** Auto (follows the phone's / Windows' dark mode), Light, Sepia, Dark, Black (for OLED screens) — in Aa while reading or ⚙ in the library. In dark themes, diagrams, charts and tables are shown inverted (dark background, light lines, colours kept) and photos are dimmed; the original page view goes dark too. *Pictures in dark mode* can switch this to dim-only or off.
    - The original page view is one tap away.
    - Contents panel.
    - It tracks **where you are** (chapter, page) and **what you've actually read**, per chapter, with bookmarks and a way back after jumps. See [Reading progress](#reading-progress).
@@ -181,6 +182,7 @@ ocrmypdf -l heb+eng --deskew --rotate-pages scanned.pdf scanned-ocr.pdf
 ```
 index.html, manifest.webmanifest, sw.js      app shell, install, offline, share target
 css/app.css                                  themes and layout (phone first)
+js/artkind.js                                diagram or photo? (how a picture is shown in dark mode)
 js/app.js                                    routing, import, OS integrations
 js/library.js, js/reader.js                  views
 js/settings.js, js/ui.js, js/db.js           settings, DOM helpers, storage

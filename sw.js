@@ -1,6 +1,6 @@
 // Service worker: offline app shell + Android share target.
 // Bump VERSION when you deploy changes so clients pick up the new files.
-const VERSION = 'br-v8';
+const VERSION = 'br-v9';
 const SHELL = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const SHELL = [
   './js/settings.js',
   './js/library.js',
   './js/progress.js',
+  './js/artkind.js',
   './js/reader.js',
   './js/notes/notes.js',
   './js/notes/providers.js',
